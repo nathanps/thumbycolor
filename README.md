@@ -1,6 +1,6 @@
 # Thumby Color Games
 
-A collection of games for the [Thumby Color](https://tinycircuits.com/products/thumby-color) handheld console.
+A collection of games for the [Thumby Color](https://tinycircuits.com/products/thumby-color) handheld console, just making small games for my kids to play.
 
 ## Games
 
@@ -35,6 +35,3 @@ A falling sand simulation game (modified from the original Thumby Color game).
 - Screen resolution: 128x128 pixels
 - Engine: [Tiny Game Engine](https://github.com/TinyCircuits/TinyCircuits-Tiny-Game-Engine) (MicroPython)
 - Documentation: https://color.thumby.us/doc/landing.html
-
-### BMP Format Note
-Icons and sprites must be **16-bit or lower** (X1 R5 G5 B5). 24-bit BMPs will cause the device to hang.
