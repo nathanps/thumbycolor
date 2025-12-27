@@ -18,6 +18,12 @@ A Tamagotchi-style virtual pet game.
 - Idle animations based on stat levels
 - Persistent save state between sessions
 
+### Sand
+A falling sand simulation game (modified from the original Thumby Color game).
+- Particle types: sand, water, stone
+- Added ant creatures that crawl around and interact with particles
+- Added fish creatures that swim through water
+
 ## Installation
 
 1. Connect your Thumby Color via USB
