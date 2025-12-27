@@ -4,6 +4,7 @@ from engine_nodes import Rectangle2DNode, Text2DNode, CameraNode
 from engine_math import Vector2
 import engine_io
 import engine_draw
+import engine_save
 import urandom
 
 # Constants
@@ -25,9 +26,13 @@ for _ in range(3):
     idx = urandom.getrandbits(8) % len(name_pool)
     RACER_NAMES.append(name_pool.pop(idx))
 
+# Initialize save system
+engine_save._init_saves_dir("Saves/Games/Race")
+engine_save.set_location("save")
+
 # Game state
 state = 0  # 0=betting, 1=bet_amount, 2=racing, 3=result
-money = STARTING_MONEY
+money = engine_save.load("money", STARTING_MONEY)
 selected_racer = 0
 bet_amount = 10
 winner = -1
@@ -94,7 +99,7 @@ finish_line.position = Vector2(FINISH_X, 0)
 name_texts = []
 for i in range(NUM_RACERS):
     name_label = Text2DNode()
-    name_label.position = Vector2(START_X + 15, (i - 1) * LANE_SPACING)
+    name_label.position = Vector2(START_X + 30, (i - 1) * LANE_SPACING)
     name_label.color = RACER_COLORS[i]
     name_label.text = RACER_NAMES[i]
     name_texts.append(name_label)
@@ -103,7 +108,7 @@ for i in range(NUM_RACERS):
 status_texts = []
 for i in range(NUM_RACERS):
     status = Text2DNode()
-    status.position = Vector2(START_X + 15, (i - 1) * LANE_SPACING - 8)
+    status.position = Vector2(45, (i - 1) * LANE_SPACING)
     status.color = engine_draw.white
     status.text = ""
     status_texts.append(status)
@@ -244,7 +249,8 @@ while True:
         if state != 3:
             ui_text.color = engine_draw.white
 
-        # Exit on MENU (short press)
+        # Save and exit on MENU
         if engine_io.MENU.is_just_pressed:
+            engine_save.save("money", money)
             engine.end()
             break
