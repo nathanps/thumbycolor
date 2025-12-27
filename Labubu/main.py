@@ -3,7 +3,8 @@ import engine
 import engine_draw
 import engine_io
 import engine_save
-from engine_nodes import Rectangle2DNode, Text2DNode, CameraNode
+from engine_nodes import Rectangle2DNode, Text2DNode, CameraNode, Sprite2DNode
+from engine_resources import TextureResource
 from engine_math import Vector2
 import urandom
 import time
@@ -39,6 +40,10 @@ LABUBU_TYPES = [
     {"name": "Secret", "body": engine_draw.darkgrey, "accent": engine_draw.lightgrey, "weight": 10},
 ]
 
+# Template colors for sprite color-swapping (X1R5G5B5 format)
+TEMPLATE_BODY_COLOR = 0x7FFF   # White in X1R5G5B5 format
+TEMPLATE_ACCENT_COLOR = 0x5EF7 # Light gray (#C0C0C0) in X1R5G5B5 format
+
 # Initialize save system
 engine_save._init_saves_dir("Saves/Games/Labubu")
 engine_save.set_location("save")
@@ -60,8 +65,6 @@ anim_type = 0  # 0 = none, 1 = feed, 2 = play
 idle_anim_type = 0  # 0 = none, 1 = happy_jump, 2 = sleeping
 idle_anim_start = 0
 idle_anim_check = 0
-BASE_BODY_Y = 5
-BASE_HEAD_Y = -20
 
 def weighted_random_choice():
     """Select a random Labubu based on weights"""
@@ -73,6 +76,48 @@ def weighted_random_choice():
         if roll < cumulative:
             return i
     return 0
+
+def color_to_x1rgb555(color):
+    """Convert engine_draw color to X1R5G5B5 value"""
+    r = int(color.r * 31)
+    g = int(color.g * 31)  # 5 bits, not 6
+    b = int(color.b * 31)
+    return (r << 10) | (g << 5) | b
+
+def colors_match(color1, color2, tolerance=2):
+    """Check if two X1R5G5B5 colors match within tolerance"""
+    r1 = (color1 >> 10) & 0x1F
+    g1 = (color1 >> 5) & 0x1F
+    b1 = color1 & 0x1F
+
+    r2 = (color2 >> 10) & 0x1F
+    g2 = (color2 >> 5) & 0x1F
+    b2 = color2 & 0x1F
+
+    return (abs(r1 - r2) <= tolerance and
+            abs(g1 - g2) <= tolerance and
+            abs(b1 - b2) <= tolerance)
+
+def create_tinted_data(base_data, body_color, accent_color):
+    """Create a modified copy of pixel data with colors swapped"""
+    # Create a bytearray copy of the data
+    new_data = bytearray(base_data)
+
+    body_color_val = color_to_x1rgb555(body_color)
+    accent_color_val = color_to_x1rgb555(accent_color)
+
+    # Swap colors in pixel data
+    for i in range(0, len(new_data), 2):
+        pixel = new_data[i] | (new_data[i+1] << 8)
+
+        if colors_match(pixel, TEMPLATE_BODY_COLOR):
+            new_data[i] = body_color_val & 0xFF
+            new_data[i+1] = (body_color_val >> 8) & 0xFF
+        elif colors_match(pixel, TEMPLATE_ACCENT_COLOR):
+            new_data[i] = accent_color_val & 0xFF
+            new_data[i+1] = (accent_color_val >> 8) & 0xFF
+
+    return new_data
 
 def save_game():
     """Save current game state"""
@@ -136,11 +181,12 @@ def clear_save():
     engine_save.delete("save_time")
 
 def update_labubu_visuals():
-    """Update Labubu colors based on type"""
-    ltype = LABUBU_TYPES[labubu_type]
-    labubu_body.color = ltype["body"]
-    labubu_head.color = ltype["accent"]
-    name_text.text = ltype["name"]
+    """Update Labubu sprite based on type"""
+    # Copy the tinted data into the texture's data buffer
+    tinted = labubu_data_variants[labubu_type]
+    for i in range(len(tinted)):
+        labubu_texture.data[i] = tinted[i]
+    name_text.text = LABUBU_TYPES[labubu_type]["name"]
 
 def update_status_bars():
     """Update status bar fill widths and positions"""
@@ -161,12 +207,9 @@ def reset_idle_anim():
     """Reset idle animation state"""
     global idle_anim_type
     idle_anim_type = 0
-    labubu_body.position.x = 0
-    labubu_body.position.y = BASE_BODY_Y
-    labubu_head.position.x = 0
-    labubu_head.position.y = BASE_HEAD_Y
-    labubu_body.rotation = 0
-    labubu_head.rotation = 0
+    labubu_sprite.position.x = 0
+    labubu_sprite.position.y = 0
+    labubu_sprite.rotation = 0
     sleep_text.opacity = 0
     disco_ball.opacity = 0
     disco_ball.position.y = -60
@@ -182,8 +225,7 @@ def show_package():
     prompt_text.opacity = 1.0
     prompt_text.text = "Press A to Open"
 
-    labubu_body.opacity = 0
-    labubu_head.opacity = 0
+    labubu_sprite.opacity = 0
     name_text.opacity = 0
     hunger_bg.opacity = 0
     hunger_fill.opacity = 0
@@ -203,8 +245,7 @@ def show_reveal():
     package_text.opacity = 0
     prompt_text.opacity = 0
 
-    labubu_body.opacity = 1.0
-    labubu_head.opacity = 1.0
+    labubu_sprite.opacity = 1.0
     name_text.opacity = 1.0
 
     hunger_bg.opacity = 0
@@ -225,8 +266,7 @@ def show_main():
     package_text.opacity = 0
     prompt_text.opacity = 0
 
-    labubu_body.opacity = 1.0
-    labubu_head.opacity = 1.0
+    labubu_sprite.opacity = 1.0
     name_text.opacity = 1.0
     hunger_bg.opacity = 1.0
     hunger_fill.opacity = 1.0
@@ -247,8 +287,7 @@ def show_death():
     prompt_text.opacity = 1.0
     prompt_text.text = "Press any button"
 
-    labubu_body.opacity = 0.3
-    labubu_head.opacity = 0.3
+    labubu_sprite.opacity = 0.3
     name_text.opacity = 0.3
     hunger_bg.opacity = 0
     hunger_fill.opacity = 0
@@ -282,24 +321,24 @@ prompt_text.text = "Press A to Open"
 prompt_text.position = Vector2(-5, 45)
 prompt_text.color = engine_draw.white
 
-# Labubu visuals (stacked shapes)
-labubu_body = Rectangle2DNode()
-labubu_body.width = 28
-labubu_body.height = 32
-labubu_body.color = engine_draw.green
-labubu_body.position = Vector2(0, 5)
-labubu_body.opacity = 0
+# Load base texture and create color variant data for each Labubu type
+labubu_texture = TextureResource("labubu_base.bmp", True)
+labubu_data_variants = []
+for ltype in LABUBU_TYPES:
+    tinted_data = create_tinted_data(labubu_texture.data, ltype["body"], ltype["accent"])
+    labubu_data_variants.append(tinted_data)
 
-labubu_head = Rectangle2DNode()
-labubu_head.width = 22
-labubu_head.height = 18
-labubu_head.color = engine_draw.green
-labubu_head.position = Vector2(0, -20)
-labubu_head.opacity = 0
+# Labubu sprite
+labubu_sprite = Sprite2DNode()
+labubu_sprite.texture = labubu_texture
+labubu_sprite.transparent_color = engine_draw.black
+labubu_sprite.position = Vector2(0, 0)
+labubu_sprite.opacity = 0
 
 name_text = Text2DNode()
 name_text.text = ""
-name_text.position = Vector2(-10, 30)
+name_text.position = Vector2(50, 0)  # Right side of screen
+name_text.rotation = 1.57  # 90 degrees
 name_text.color = engine_draw.white
 name_text.opacity = 0
 
@@ -597,11 +636,9 @@ while True:
                     progress = idle_elapsed / JUMP_DURATION_MS
                     # Jump up then down (parabola)
                     jump_offset = JUMP_HEIGHT * (1.0 - abs(2.0 * progress - 1.0))
-                    labubu_body.position.y = BASE_BODY_Y - jump_offset
-                    labubu_head.position.y = BASE_HEAD_Y - jump_offset
+                    labubu_sprite.position.y = -jump_offset
                     # Spin (full rotation)
-                    labubu_body.rotation = progress * 6.28
-                    labubu_head.rotation = progress * 6.28
+                    labubu_sprite.rotation = progress * 6.28
             elif idle_anim_type == 2:
                 # Sleeping animation
                 if hunger < MAX_STAT:
@@ -609,8 +646,7 @@ while True:
                     reset_idle_anim()
                 else:
                     # Rotate to sleeping position
-                    labubu_body.rotation = 1.57  # 90 degrees
-                    labubu_head.rotation = 1.57
+                    labubu_sprite.rotation = 1.57  # 90 degrees
                     # Animate zzz opacity
                     idle_elapsed = time.ticks_diff(current_time, idle_anim_start)
                     zzz_cycle = (idle_elapsed % 1000) / 1000.0
@@ -634,10 +670,8 @@ while True:
 
                 # Labubu wiggles side to side
                 wiggle = 5 * (1.0 - abs(2.0 * ((idle_elapsed % 300) / 300.0) - 1.0)) - 2.5
-                labubu_body.position.x = wiggle
-                labubu_head.position.x = wiggle
-                labubu_body.rotation = wiggle * 0.05
-                labubu_head.rotation = wiggle * 0.05
+                labubu_sprite.position.x = wiggle
+                labubu_sprite.rotation = wiggle * 0.05
             elif idle_anim_type == 4:
                 # Crying animation - tears blink and labubu shakes
                 idle_elapsed = time.ticks_diff(current_time, idle_anim_start)
@@ -645,8 +679,7 @@ while True:
                 # Labubu shakes left and right rapidly
                 shake_cycle = (idle_elapsed % 150) / 150.0
                 shake = 4 * (1.0 - abs(2.0 * shake_cycle - 1.0)) - 2
-                labubu_body.position.x = shake
-                labubu_head.position.x = shake
+                labubu_sprite.position.x = shake
 
                 # Tears blink on/off every 200ms and move with the shake
                 tear_cycle = (idle_elapsed % 400) / 400.0
