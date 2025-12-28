@@ -18,6 +18,21 @@ A Tamagotchi-style virtual pet game.
 - Idle animations based on stat levels
 - Persistent save state between sessions
 
+### PinBattle
+A 2-player pachinko-style battle game.
+- Two players select names and drop colored balls
+- Balls bounce through pins toward a moving bucket
+- First ball to land in the bucket wins
+- Use LB/RB bumper buttons to nudge balls
+
+### Watermelon
+A rolling watermelon balance game.
+- Roll a watermelon across procedurally generated terrain
+- Tilt gravity with LB/RB to control movement
+- Jump with A to hop over gaps (1 second cooldown)
+- Don't fall too far or you'll splat!
+- High score saved between sessions
+
 ### Sand
 A falling sand simulation game (modified from the original Thumby Color game).
 - Particle types: sand, water, stone
