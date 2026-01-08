@@ -330,7 +330,7 @@ def check_game_win():
 
 def make_move(board_idx, cell_idx):
     """Execute a move and update game state"""
-    global current_player, required_board
+    global current_player, required_board, cursor_board
 
     cell_global = board_idx * 9 + cell_idx
     cells[cell_global] = current_player
