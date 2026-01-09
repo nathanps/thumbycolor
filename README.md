@@ -33,11 +33,26 @@ A rolling watermelon balance game.
 - Don't fall too far or you'll splat!
 - High score saved between sessions
 
+### TicTac9
+Ultimate Tic Tac Toe - a strategic twist on the classic game.
+- 9 tic-tac-toe boards arranged in a 3x3 grid
+- Where you play determines which board your opponent must play next
+- Win 3 boards in a row to win the game
+- 2-player local gameplay (X vs O)
+
 ### Sand
 A falling sand simulation game (modified from the original Thumby Color game).
 - Particle types: sand, water, stone
 - Added ant creatures that crawl around and interact with particles
 - Added fish creatures that swim through water
+
+### TimesTables
+A multiplication times tables learning game for kids.
+- Practice 1x through 12x tables
+- Three-phase learning: read aloud, sequential quiz, shuffled quiz
+- Multiple choice questions with plausible wrong answers
+- Tracks best scores for each table (saves between sessions)
+- Shows correct answer when wrong, helping reinforce learning
 
 ## Installation
 
