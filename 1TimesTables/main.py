@@ -7,6 +7,8 @@ from engine_nodes import Rectangle2DNode, Text2DNode, CameraNode
 from engine_math import Vector2
 import random
 
+engine.fps_limit(60)
+
 
 def shuffle_list(lst):
     """Fisher-Yates shuffle since MicroPython lacks random.shuffle"""
@@ -23,9 +25,10 @@ STATE_QUIZ_SEQUENTIAL = 2
 STATE_QUIZ_SHUFFLED = 3
 STATE_RESULTS = 4
 STATE_FEEDBACK = 5  # Brief feedback state after answer
+STATE_QUIZ_INTRO = 6  # Intro screen before scored quiz
 
 # Initialize save system
-engine_save._init_saves_dir("Saves/Games/TimesTables")
+engine_save._init_saves_dir("Saves/Games/1TimesTables")
 engine_save.set_location("save")
 
 # Load scores for all 12 tables (0-100)
@@ -49,6 +52,8 @@ first_try_correct = 0
 shuffled_order = []
 feedback_timer = 0
 feedback_correct = False
+question_timer = 0  # 5-second countdown for scored quiz (300 frames at 60fps)
+timed_out = False  # Track if timeout occurred (vs wrong answer)
 
 # Create camera
 camera = CameraNode()
@@ -154,23 +159,87 @@ result_highscore.position = Vector2(0, 30)
 result_highscore.color = engine_draw.gold
 result_highscore.text = ""
 
+# Timer text for scored quiz
+timer_text = Text2DNode()
+timer_text.position = Vector2(50, -55)
+timer_text.color = engine_draw.yellow
+timer_text.text = ""
+
+# Intro screen texts
+intro_title = Text2DNode()
+intro_title.position = Vector2(0, -35)
+intro_title.color = engine_draw.yellow
+intro_title.text = ""
+
+intro_line1 = Text2DNode()
+intro_line1.position = Vector2(0, -5)
+intro_line1.color = engine_draw.white
+intro_line1.text = ""
+
+intro_line2 = Text2DNode()
+intro_line2.position = Vector2(0, 15)
+intro_line2.color = engine_draw.white
+intro_line2.text = ""
+
+# Red border rectangles for wrong/timeout feedback
+wrong_border_top = Rectangle2DNode()
+wrong_border_top.width = 128
+wrong_border_top.height = 4
+wrong_border_top.color = engine_draw.red
+wrong_border_top.position = Vector2(0, -62)
+wrong_border_top.opacity = 0
+
+wrong_border_bottom = Rectangle2DNode()
+wrong_border_bottom.width = 128
+wrong_border_bottom.height = 4
+wrong_border_bottom.color = engine_draw.red
+wrong_border_bottom.position = Vector2(0, 62)
+wrong_border_bottom.opacity = 0
+
+wrong_border_left = Rectangle2DNode()
+wrong_border_left.width = 4
+wrong_border_left.height = 128
+wrong_border_left.color = engine_draw.red
+wrong_border_left.position = Vector2(-62, 0)
+wrong_border_left.opacity = 0
+
+wrong_border_right = Rectangle2DNode()
+wrong_border_right.width = 4
+wrong_border_right.height = 128
+wrong_border_right.color = engine_draw.red
+wrong_border_right.position = Vector2(62, 0)
+wrong_border_right.opacity = 0
+
+
+def show_wrong_border(show):
+    """Show or hide the red border for wrong answers"""
+    opacity = 1 if show else 0
+    wrong_border_top.opacity = opacity
+    wrong_border_bottom.opacity = opacity
+    wrong_border_left.opacity = opacity
+    wrong_border_right.opacity = opacity
+
 
 def generate_wrong_answers(table, multiplier, correct):
-    """Generate 2 plausible wrong answers"""
+    """Generate 2 plausible wrong answers close to correct value"""
     wrongs = set()
-    # Adjacent products (common mistakes)
-    if multiplier > 1:
-        wrongs.add(table * (multiplier - 1))
-    if multiplier < 12:
-        wrongs.add(table * (multiplier + 1))
-    # Other products from same table
-    for m in range(1, 13):
-        if m != multiplier:
-            wrongs.add(table * m)
-    # Remove correct answer and invalid values
+
+    # Use offsets based on the table number for plausibility
+    # Smaller tables get smaller offsets
+    base_offset = max(2, table // 2)
+
+    # Generate candidates: correct +/- (base_offset * 1), +/- (base_offset * 2), etc.
+    for mult in range(1, 6):
+        offset = base_offset * mult
+        if correct - offset > 0:
+            wrongs.add(correct - offset)
+        wrongs.add(correct + offset)
+
+    # Remove correct answer if it somehow got included
     wrongs.discard(correct)
-    wrongs.discard(0)
-    wrong_list = [w for w in wrongs if w > 0]
+
+    # Shuffle and return 2
+    wrong_list = list(wrongs)
     shuffle_list(wrong_list)
     return wrong_list[:2]
 
@@ -198,6 +267,11 @@ def hide_all_ui():
     result_score.opacity = 0
     result_fraction.opacity = 0
     result_highscore.opacity = 0
+    timer_text.opacity = 0
+    intro_title.opacity = 0
+    intro_line1.opacity = 0
+    intro_line2.opacity = 0
+    show_wrong_border(False)
     for t in menu_texts:
         t.opacity = 0
     for t in left_texts:
@@ -260,8 +334,22 @@ def show_read_aloud():
         right_texts[i].text = str(table) + "x" + str(m) + "=" + str(table * m)
 
 
+def show_quiz_intro():
+    """Show intro screen before scored quiz"""
+    hide_all_ui()
+    intro_title.opacity = 1
+    intro_title.text = "SCORED QUIZ!"
+    intro_line1.opacity = 1
+    intro_line1.text = "5 seconds per question"
+    intro_line2.opacity = 1
+    intro_line2.text = "Score shown at end"
+    instruction_text.opacity = 1
+    instruction_text.text = "A: Start"
+
+
 def show_quiz(is_shuffled):
     """Show quiz screen"""
+    global question_timer
     hide_all_ui()
     question_text.opacity = 1
     answer_selector.opacity = 0.3
@@ -270,6 +358,9 @@ def show_quiz(is_shuffled):
 
     if is_shuffled:
         score_text.opacity = 1
+        timer_text.opacity = 1
+        question_timer = 300  # 5 seconds at 60fps
+        timer_text.text = "5"
 
     for t in option_texts:
         t.opacity = 1
@@ -303,18 +394,21 @@ def update_quiz_display(is_shuffled):
         score_text.text = "Score: " + str(first_try_correct) + "/" + str(current_question)
 
 
-def show_feedback(is_correct):
+def show_feedback(is_correct, is_timeout=False):
     """Show answer feedback"""
     for i in range(3):
         if i == correct_index:
             option_texts[i].color = engine_draw.green
-        elif i == selected_answer and not is_correct:
+        elif i == selected_answer and not is_correct and not is_timeout:
+            # Only show red if wrong answer selected (not timeout)
             option_texts[i].color = engine_draw.red
         else:
             option_texts[i].color = engine_draw.lightgrey
     answer_selector.opacity = 0
-    # Show instruction to continue if wrong
+    timer_text.opacity = 0  # Hide timer during feedback
+    # Show red border and continue instruction if wrong or timeout
     if not is_correct:
+        show_wrong_border(True)
         instruction_text.opacity = 1
         instruction_text.text = "A: Continue"
 
@@ -393,7 +487,7 @@ while True:
                     # Start sequential quiz
                     state = STATE_QUIZ_SEQUENTIAL
                     current_question = 0
-                    selected_answer = 0
+                    selected_answer = 1  # Start in middle for less input
                     setup_question(selected_table + 1, 1)
                     show_quiz(False)
                     input_cooldown = 10
@@ -425,7 +519,20 @@ while True:
                     input_cooldown = 10
 
         elif state == STATE_QUIZ_SHUFFLED:
-            if input_cooldown == 0:
+            # Update timer countdown
+            question_timer -= 1
+            seconds_left = (question_timer + 59) // 60  # Round up
+            timer_text.text = str(seconds_left)
+
+            # Check for timeout
+            if question_timer <= 0:
+                timed_out = True
+                feedback_correct = False
+                show_feedback(False, is_timeout=True)
+                state = STATE_FEEDBACK
+                feedback_timer = 30
+                input_cooldown = 10
+            elif input_cooldown == 0:
                 if engine_io.UP.is_just_pressed:
                     selected_answer = (selected_answer - 1) % 3
                     update_quiz_display(True)
@@ -438,6 +545,7 @@ while True:
 
                 elif engine_io.A.is_just_pressed:
                     # Check answer - track first try
+                    timed_out = False
                     feedback_correct = (selected_answer == correct_index)
                     if feedback_correct:
                         first_try_correct += 1
@@ -457,19 +565,14 @@ while True:
 
             if can_advance:
                 current_question += 1
-                selected_answer = 0
+                selected_answer = 1  # Start in middle for less input
 
                 if current_question >= 12:
                     # Check if we were in sequential or shuffled
                     if len(shuffled_order) == 0:
-                        # Was sequential, now start shuffled
-                        state = STATE_QUIZ_SHUFFLED
-                        current_question = 0
-                        first_try_correct = 0
-                        shuffled_order = list(range(1, 13))
-                        shuffle_list(shuffled_order)
-                        setup_question(selected_table + 1, shuffled_order[0])
-                        show_quiz(True)
+                        # Was sequential, show intro before scored quiz
+                        state = STATE_QUIZ_INTRO
+                        show_quiz_intro()
                     else:
                         # Was shuffled, show results
                         state = STATE_RESULTS
@@ -496,4 +599,18 @@ while True:
                     state = STATE_TABLE_SELECT
                     shuffled_order = []
                     show_table_select()
+                    input_cooldown = 10
+
+        elif state == STATE_QUIZ_INTRO:
+            if input_cooldown == 0:
+                if engine_io.A.is_just_pressed:
+                    # Start scored quiz
+                    state = STATE_QUIZ_SHUFFLED
+                    current_question = 0
+                    first_try_correct = 0
+                    selected_answer = 1  # Start in middle for less input
+                    shuffled_order = list(range(1, 13))
+                    shuffle_list(shuffled_order)
+                    setup_question(selected_table + 1, shuffled_order[0])
+                    show_quiz(True)
                     input_cooldown = 10
