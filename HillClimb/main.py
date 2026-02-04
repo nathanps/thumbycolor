@@ -22,7 +22,7 @@ SCREEN_HEIGHT = 128
 
 # === Physics Constants ===
 GRAVITY_X = 0
-GRAVITY_Y = 0.15  # Downward gravity
+GRAVITY_Y = 0.15  # Downward gravity (positive Y is down)
 
 # Car physics
 CAR_WIDTH = 22
@@ -134,7 +134,7 @@ class TerrainManager:
         """Calculate terrain angle at position x"""
         h1 = self._get_terrain_height(x - 5)
         h2 = self._get_terrain_height(x + 5)
-        return math.atan2(h2 - h1, 10)
+        return -math.atan2(h2 - h1, 10)  # Negated for correct visual rotation
 
     def _get_available_segment(self, camera_x):
         """Find a segment off-screen left for reuse"""
@@ -145,14 +145,14 @@ class TerrainManager:
         return -1
 
     def generate_segment(self, camera_x):
-        """Generate next terrain segment"""
+        """Generate next terrain segment. Returns False if no segment available."""
         x = self.next_x
         y = self._get_terrain_height(x)
         angle = self._get_terrain_angle(x)
 
         idx = self._get_available_segment(camera_x)
         if idx == -1:
-            return
+            return False
 
         physics = self.segments[idx]
         physics.position = Vector2(x, y)
@@ -167,7 +167,8 @@ class TerrainManager:
     def update(self, camera_x):
         """Generate new segments ahead of camera"""
         while self.next_x < camera_x + SCREEN_WIDTH * 2:
-            self.generate_segment(camera_x)
+            if self.generate_segment(camera_x) == False:
+                break  # No available segment, stop generating
 
     def get_ground_y_at(self, x):
         """Get ground Y position at x coordinate"""
@@ -197,16 +198,10 @@ class Car:
     """Hill climb car with two wheels"""
 
     def __init__(self):
-        # Car body (physics)
-        self.body = PhysicsRectangle2DNode()
-        self.body.width = CAR_WIDTH
-        self.body.height = CAR_HEIGHT
-        self.body.dynamic = True
-        self.body.bounciness = 0.2
-        self.body.density = 1.5
-        self.body.friction = 0.3
-        self.body.position = Vector2(0, -30)
-        self.body.layer = 6
+        # Track position manually (no parent-child relationship)
+        self.x = 0
+        self.y = -30
+        self.rotation = 0
 
         # Car visual body (red car)
         self.visual = Rectangle2DNode()
@@ -214,48 +209,37 @@ class Car:
         self.visual.height = CAR_HEIGHT
         self.visual.color = engine_draw.red
         self.visual.layer = 7
-        self.body.add_child(self.visual)
 
         # Windshield
         self.windshield = Rectangle2DNode()
         self.windshield.width = 6
         self.windshield.height = 5
         self.windshield.color = engine_draw.cyan
-        self.windshield.position = Vector2(4, -4)
         self.windshield.layer = 8
-        self.body.add_child(self.windshield)
 
-        # Front wheel (visual only - positioned relative to body)
+        # Front wheel
         self.front_wheel = Circle2DNode()
         self.front_wheel.radius = WHEEL_RADIUS
         self.front_wheel.color = engine_draw.darkgrey
-        self.front_wheel.position = Vector2(7, 6)
         self.front_wheel.layer = 6
-        self.body.add_child(self.front_wheel)
 
         # Front wheel hub
         self.front_hub = Circle2DNode()
         self.front_hub.radius = 2
         self.front_hub.color = engine_draw.lightgrey
-        self.front_hub.position = Vector2(7, 6)
         self.front_hub.layer = 7
-        self.body.add_child(self.front_hub)
 
-        # Rear wheel (visual only)
+        # Rear wheel
         self.rear_wheel = Circle2DNode()
         self.rear_wheel.radius = WHEEL_RADIUS
         self.rear_wheel.color = engine_draw.darkgrey
-        self.rear_wheel.position = Vector2(-7, 6)
         self.rear_wheel.layer = 6
-        self.body.add_child(self.rear_wheel)
 
         # Rear wheel hub
         self.rear_hub = Circle2DNode()
         self.rear_hub.radius = 2
         self.rear_hub.color = engine_draw.lightgrey
-        self.rear_hub.position = Vector2(-7, 6)
         self.rear_hub.layer = 7
-        self.body.add_child(self.rear_hub)
 
         self.wheel_rotation = 0
         self.target_rotation = 0
@@ -264,57 +248,92 @@ class Car:
         self.distance = 0
         self.max_distance = 0
         self.alive = True
+        # Manual velocity tracking
+        self.vel_x = 0
+        self.vel_y = 0
+
+    def sync_visuals(self):
+        """Move all visual elements to match car position"""
+        x = self.x
+        y = self.y
+
+        # Main body
+        self.visual.position.x = x
+        self.visual.position.y = y
+        self.visual.rotation = self.rotation
+
+        # Windshield (offset from body center)
+        self.windshield.position.x = x + 4 * math.cos(self.rotation) - (-4) * math.sin(self.rotation)
+        self.windshield.position.y = y + 4 * math.sin(self.rotation) + (-4) * math.cos(self.rotation)
+        self.windshield.rotation = self.rotation
+
+        # Wheels (offset from body center)
+        # Front wheel at (7, 6) relative to body
+        self.front_wheel.position.x = x + 7 * math.cos(self.rotation) - 6 * math.sin(self.rotation)
+        self.front_wheel.position.y = y + 7 * math.sin(self.rotation) + 6 * math.cos(self.rotation)
+
+        # Rear wheel at (-7, 6) relative to body
+        self.rear_wheel.position.x = x + (-7) * math.cos(self.rotation) - 6 * math.sin(self.rotation)
+        self.rear_wheel.position.y = y + (-7) * math.sin(self.rotation) + 6 * math.cos(self.rotation)
+
+        # Wheel hubs (same position as wheels with slight animation)
+        hub_offset_x = 2 * math.cos(self.wheel_rotation) * 0.3
+        hub_offset_y = 2 * math.sin(self.wheel_rotation) * 0.3
+        self.front_hub.position.x = self.front_wheel.position.x + hub_offset_x
+        self.front_hub.position.y = self.front_wheel.position.y + hub_offset_y
+        self.rear_hub.position.x = self.rear_wheel.position.x + hub_offset_x
+        self.rear_hub.position.y = self.rear_wheel.position.y + hub_offset_y
 
     def update(self, terrain):
         """Update car physics and state"""
         if not self.alive:
             return False
 
-        # Get current position
-        x = self.body.position.x
-        y = self.body.position.y
-
         # Check if on ground
-        ground_y = terrain.get_ground_y_at(x)
-        car_bottom = y + CAR_HEIGHT / 2 + WHEEL_RADIUS
+        ground_y = terrain.get_ground_y_at(self.x)
+        car_bottom = self.y + CAR_HEIGHT / 2 + WHEEL_RADIUS
 
         self.grounded = car_bottom >= ground_y - 5
 
-        # Align car rotation to terrain when grounded
-        if self.grounded:
-            terrain_angle = terrain.get_angle_at(x)
+        # Apply gravity when not grounded
+        if not self.grounded:
+            self.vel_y += GRAVITY_Y
+        else:
+            # On ground - reset vertical velocity and snap to terrain
+            self.vel_y = 0
+            terrain_angle = terrain.get_angle_at(self.x)
             self.target_rotation = terrain_angle
-
             # Keep car on ground
             target_y = ground_y - CAR_HEIGHT / 2 - WHEEL_RADIUS
-            self.body.position = Vector2(x, min(y, target_y + 2))
+            self.y = min(self.y, target_y + 2)
+            # Apply ground friction
+            self.vel_x *= 0.98
+
+        # Apply velocity to position
+        self.x += self.vel_x
+        self.y += self.vel_y
 
         # Smooth rotation
-        current_rot = self.body.rotation
-        rot_diff = self.target_rotation - current_rot
-        self.body.rotation = current_rot + rot_diff * ROTATION_SMOOTHING
+        rot_diff = self.target_rotation - self.rotation
+        self.rotation = self.rotation + rot_diff * ROTATION_SMOOTHING
 
         # Update wheel rotation based on velocity
-        vel_x = self.body.velocity.x
-        self.wheel_rotation += vel_x / WHEEL_RADIUS * 0.3
+        self.wheel_rotation += self.vel_x / WHEEL_RADIUS * 0.3
 
-        # Visual wheel rotation (rotate the hubs to show movement)
-        hub_offset_x = 2 * math.cos(self.wheel_rotation)
-        hub_offset_y = 2 * math.sin(self.wheel_rotation)
-        self.front_hub.position = Vector2(7 + hub_offset_x * 0.3, 6 + hub_offset_y * 0.3)
-        self.rear_hub.position = Vector2(-7 + hub_offset_x * 0.3, 6 + hub_offset_y * 0.3)
+        # Sync all visual elements to new position
+        self.sync_visuals()
 
         # Update distance
-        if x > self.max_distance:
-            self.max_distance = x
-        self.distance = max(0, int(x / 10))
+        if self.x > self.max_distance:
+            self.max_distance = self.x
+        self.distance = max(0, int(self.x / 10))
 
         # Check for death (flipped over or fell)
-        if abs(self.body.rotation) > 2.5:  # ~143 degrees
+        if abs(self.rotation) > 2.5:  # ~143 degrees
             self.alive = False
             return False
 
-        if y > 100:  # Fell off screen
+        if self.y > 100:  # Fell off screen
             self.alive = False
             return False
 
@@ -334,16 +353,15 @@ class Car:
         self.fuel -= FUEL_CONSUMPTION
 
         # Calculate force direction based on car rotation
-        angle = self.body.rotation
+        angle = self.rotation
         force = MOTOR_POWER if forward else -MOTOR_POWER
 
         # Apply force in direction car is facing
         fx = force * math.cos(angle)
         fy = force * math.sin(angle)
 
-        vel = self.body.velocity
-        new_vx = vel.x + fx
-        new_vy = vel.y + fy
+        new_vx = self.vel_x + fx
+        new_vy = self.vel_y + fy
 
         # Cap velocity
         speed = math.sqrt(new_vx * new_vx + new_vy * new_vy)
@@ -352,14 +370,13 @@ class Car:
             new_vx *= scale
             new_vy *= scale
 
-        self.body.velocity = Vector2(new_vx, new_vy)
+        self.vel_x = new_vx
+        self.vel_y = new_vy
 
     def brake(self):
         """Apply braking force"""
-        vel = self.body.velocity
         # Reduce velocity
-        new_vx = vel.x * (1.0 - BRAKE_POWER)
-        self.body.velocity = Vector2(new_vx, vel.y)
+        self.vel_x *= (1.0 - BRAKE_POWER)
 
     def add_fuel(self, amount):
         """Add fuel pickup"""
@@ -367,17 +384,24 @@ class Car:
 
     def reset(self):
         """Reset car for new game"""
-        self.body.position = Vector2(0, -30)
-        self.body.velocity = Vector2(0, 0)
-        self.body.rotation = 0
+        # Calculate starting Y position on the ground
+        ground_y = 30  # Flat terrain height at x=0
+        start_y = ground_y - CAR_HEIGHT / 2 - WHEEL_RADIUS
+        self.x = 0
+        self.y = start_y
+        self.rotation = 0
         self.target_rotation = 0
         self.wheel_rotation = 0
-        self.grounded = False
+        self.grounded = True  # Start grounded since we're on the terrain
         self.fuel = MAX_FUEL
         self.distance = 0
         self.max_distance = 0
         self.alive = True
+        # Reset manual velocity
+        self.vel_x = 0
+        self.vel_y = 0
         self.show()
+        self.sync_visuals()
 
     def show(self):
         self.visual.opacity = 1.0
@@ -394,7 +418,9 @@ class Car:
         self.rear_wheel.opacity = 0
         self.front_hub.opacity = 0
         self.rear_hub.opacity = 0
-        self.body.position = Vector2(0, -200)
+        self.x = 0
+        self.y = -200
+        self.sync_visuals()
 
 
 # === Sky Background ===
@@ -675,7 +701,8 @@ def start_game():
 
     terrain.reset()
     car.reset()
-    camera.position = Vector2(0, 0)
+    camera.position.x = 0
+    camera.position.y = 0
     last_fuel_distance = 0
 
     # Hide all fuel canisters
@@ -718,11 +745,11 @@ while True:
 
             # Tilt controls for rotation in air
             if engine_io.LEFT.is_pressed and not car.grounded:
-                car.body.rotation -= 0.05
-                car.target_rotation = car.body.rotation
+                car.rotation -= 0.05
+                car.target_rotation = car.rotation
             elif engine_io.RIGHT.is_pressed and not car.grounded:
-                car.body.rotation += 0.05
-                car.target_rotation = car.body.rotation
+                car.rotation += 0.05
+                car.target_rotation = car.rotation
 
             # Update car
             out_of_fuel = car.fuel <= 0
@@ -744,8 +771,8 @@ while True:
                 input_cooldown = 30
 
             # Camera follow
-            target_x = car.body.position.x + 20
-            target_y = car.body.position.y - 10
+            target_x = car.x + 20
+            target_y = car.y - 10
             camera.position.x += (target_x - camera.position.x) * 0.1
             camera.position.y += (target_y - camera.position.y) * 0.05
 
@@ -757,11 +784,11 @@ while True:
 
             # Check fuel canister collection
             for fc in fuel_canisters:
-                if fc.check_collect(car.body.position.x, car.body.position.y):
+                if fc.check_collect(car.x, car.y):
                     car.add_fuel(25)
 
             # Spawn new fuel canisters periodically
-            current_dist = int(car.body.position.x)
+            current_dist = int(car.x)
             if current_dist - last_fuel_distance > FUEL_BONUS_DISTANCE:
                 spawn_fuel_canister(current_dist + 100 + urandom.getrandbits(6))
                 last_fuel_distance = current_dist
@@ -790,7 +817,7 @@ while True:
                 fuel_bar.color = engine_draw.red
 
             # Speed display
-            speed = abs(car.body.velocity.x)
+            speed = abs(car.vel_x)
             speed_text.text = str(int(speed * 30)) + "km/h"
             speed_text.position.x = camera.position.x - 55
             speed_text.position.y = camera.position.y - 45
