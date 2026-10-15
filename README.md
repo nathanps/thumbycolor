@@ -42,7 +42,9 @@ Ultimate Tic Tac Toe - a strategic twist on the classic game.
 
 ### Sand
 A falling sand simulation game (modified from the original Thumby Color game).
-- Particle types: sand, water, stone
+- Particle types: sand, water, wall, fuse, bomb, fire (LB/RB to switch, A to draw, B to erase)
+- Fuse burns along its length when lit with fire; water puts it out
+- Bombs explode when fire or a burning fuse touches them (chain reactions, screen shake, boom sound from `boom.wav`)
 - Added ant creatures that crawl around and interact with particles
 - Added fish creatures that swim through water
 

@@ -3,8 +3,9 @@ import engine_main
 import engine
 import engine_io
 import engine_draw
+import engine_audio
 from engine_nodes import Sprite2DNode, CameraNode
-from engine_resources import TextureResource
+from engine_resources import TextureResource, WaveSoundResource
 
 import framebuf
 import random
@@ -35,23 +36,49 @@ P_D_SOLID = const(2 << 2)
 # STATIC bit flag
 P_S_STATIC = const(1 << 4)
 
+# Particle IDs (already shifted into the ID bits, compare against p & P_ID)
+I_AIR = const(0 << 5)
+I_SAND = const(1 << 5)
+I_WATER = const(2 << 5)
+I_WALL = const(3 << 5)
+I_FUSE = const(4 << 5)
+I_BOMB = const(5 << 5)
+I_FIRE = const(6 << 5)
+I_LIT = const(7 << 5)
+
 # Particle definitions
 #   - Each type of particle consists of an ID, static flag, density value, and color value
 #   - By using bitwise OR, they can be composed by combining each category value
-P_AIR = const((0 << 5) | P_S_STATIC | P_D_GAS)
-P_SAND = const((1 << 5) | P_D_SOLID)
-P_WATER = const((2 << 5) | P_D_LIQUID)
-P_WALL = const((3 << 5) | P_S_STATIC | P_D_SOLID)
-P_ANT = const((4 << 5) | P_S_STATIC | P_D_SOLID)   # Creature marker (static so physics ignores)
-P_FISH = const((5 << 5) | P_S_STATIC | P_D_LIQUID) # Creature marker (static so physics ignores)
+#   - FIRE and LIT are not static, but have their own rules in physics() instead of falling
+P_AIR = const(I_AIR | P_S_STATIC | P_D_GAS)
+P_SAND = const(I_SAND | P_D_SOLID)
+P_WATER = const(I_WATER | P_D_LIQUID)
+P_WALL = const(I_WALL | P_S_STATIC | P_D_SOLID)
+P_FUSE = const(I_FUSE | P_S_STATIC | P_D_SOLID)   # Burns slowly along its length
+P_BOMB = const(I_BOMB | P_S_STATIC | P_D_SOLID)   # Explodes when fire touches it
+P_FIRE = const(I_FIRE | P_D_GAS)                  # Rises, flickers, burns out
+P_LIT = const(I_LIT | P_D_SOLID)                  # A fuse that is burning
 
 # Creature type constants
 CREATURE_ANT = const(0)
 CREATURE_FISH = const(1)
 MAX_CREATURES = const(20)
 
-# Cycle order for picking an element (B button)
-Picks = [P_SAND, P_WATER, P_WALL, P_ANT, P_FISH]
+# Creature tools aren't particles, so they use values outside the particle range
+TOOL_ANT = const(-1)
+TOOL_FISH = const(-2)
+
+# Tools to pick from with LB/RB: (name, particle or creature tool, cursor color)
+Tools = [
+    ("SAND", P_SAND, 0xe736),
+    ("WATER", P_WATER, 0x63d7),
+    ("WALL", P_WALL, 0xa513),
+    ("FUSE", P_FUSE, 0x5B66),
+    ("BOMB", P_BOMB, 0xC926),
+    ("FIRE", P_FIRE, 0xFD20),
+    ("ANT", TOOL_ANT, 0x4208),
+    ("FISH", TOOL_FISH, 0xFD20),
+]
 
 # State Format (8-bit)
 #   000000BM
@@ -70,19 +97,33 @@ S_B_BIAS = const(1 << 1)
 S_B_INV_BIAS = const(255 - S_B_BIAS)
 
 # Buffers that contain each pixel on the screen, plus some extra along the edges
-particles = bytearray(W*H)  # Particle type (air, sand, water, wall)
+particles = bytearray(W*H)  # Particle type
 state = bytearray(W*H)      # Particle state (moved, bias)
 
-# Setup empty screen full of air, with the extra along the edges as walls
-for px in range(W):
-    particles[px] = P_WALL
-    particles[W*(H-1)+px] = P_WALL
-for py in range(H):
-    particles[py*W] = P_WALL
-    particles[py*W+(W-1)] = P_WALL
-for py in range(1, H-1):
-    for px in range(1, W-1):
-        particles[py*W+px] = P_AIR
+# Random number state shared by the viper functions (they can't call random cheaply)
+rng = bytearray(4)
+rng[0] = random.getrandbits(8)
+rng[1] = random.getrandbits(8)
+
+# Explosions that happened this frame, for sound/shake/creatures: [count, x0, y0, x1, y1, ...]
+MAX_BOOMS = const(8)
+booms = bytearray(1 + 2*MAX_BOOMS)
+BOOM_R = const(9)       # Explosion radius in pixels
+
+
+def reset_particles():
+    """Fill the screen with air, with the extra along the edges as walls."""
+    for i in range(W * H):
+        particles[i] = P_AIR
+    for px in range(W):
+        particles[px] = P_WALL
+        particles[W*(H-1)+px] = P_WALL
+    for py in range(H):
+        particles[py*W] = P_WALL
+        particles[py*W+(W-1)] = P_WALL
+
+
+reset_particles()
 
 
 # Creature class for ants and fish
@@ -93,6 +134,7 @@ class Creature:
         self.ctype = ctype
         self.dir = random.choice([-1, 1])
         self.alive = True
+        self.burnt = False   # Burnt creatures don't leave a corpse
         self.timer = 0
         self.vy = 0.0
 
@@ -108,8 +150,7 @@ SAVE_FILE = "sand_save.data"
 def save_game():
     """Save game state to persistent storage."""
     engine_save.set_location(SAVE_FILE)
-    # Save particles as hex string
-    engine_save.save("particles", particles.hex())
+    engine_save.save("particles", particles)
     # Save creatures as list of dicts
     creature_data = []
     for c in creatures:
@@ -129,10 +170,15 @@ def load_game():
         if saved_particles is None:
             return False
 
-        # Restore particles
-        saved_bytes = bytearray.fromhex(saved_particles)
-        for i in range(min(len(saved_bytes), len(particles))):
-            particles[i] = saved_bytes[i]
+        # Older saves stored the particles as a hex string
+        if isinstance(saved_particles, str):
+            saved_particles = bytearray.fromhex(saved_particles)
+        if len(saved_particles) != len(particles):
+            return False
+        for i in range(len(particles)):
+            particles[i] = saved_particles[i]
+        saved_particles = None
+        gc.collect()
 
         # Restore creatures
         saved_creatures = engine_save.load("creatures", "[]")
@@ -145,13 +191,11 @@ def load_game():
                 c.timer = cd.get("timer", 0)
                 c.vy = cd.get("vy", 0.0)
                 creatures.append(c)
-
-        # Delete save after loading
-        engine_save.save("particles", None)
-        engine_save.save("creatures", None)
         return True
-    except:
+    except Exception:
         # If loading fails, start fresh
+        reset_particles()
+        creatures = []
         return False
 
 
@@ -173,13 +217,67 @@ def draw_pause_menu():
 
 
 @micropython.viper
+def explode(x: int, y: int):
+    """Blow up everything (except walls) in a circle around x, y and fill it with fire."""
+    pa = ptr8(particles)
+    sa = ptr8(state)
+    rs = ptr32(rng)
+    bq = ptr8(booms)
+    r = rs[0]
+
+    # Remember the explosion for sound, screen shake and creatures
+    n = bq[0]
+    if n < MAX_BOOMS:
+        bq[1 + n*2] = x
+        bq[2 + n*2] = y
+        bq[0] = n + 1
+
+    x0 = x - BOOM_R
+    if x0 < 1:
+        x0 = 1
+    x1 = x + BOOM_R
+    if x1 > W-2:
+        x1 = W-2
+    y0 = y - BOOM_R
+    if y0 < 1:
+        y0 = 1
+    y1 = y + BOOM_R
+    if y1 > H-2:
+        y1 = H-2
+
+    yy = y0
+    while yy <= y1:
+        dy = yy - y
+        xx = x0
+        while xx <= x1:
+            dx = xx - x
+            r = (r * 1664525 + 1013904223) & 0x3fffffff
+            rb = r >> 16
+            # Jitter the edge so the blast isn't a perfect circle
+            if dx*dx + dy*dy <= BOOM_R*BOOM_R - (rb & 15):
+                i = W * yy + xx
+                if (pa[i] & P_ID) != I_WALL:
+                    if (rb >> 4) & 3:
+                        pa[i] = P_FIRE | ((rb >> 6) & 3)
+                    else:
+                        pa[i] = P_AIR
+                    sa[i] |= S_M_MOVED
+            xx += 1
+        yy += 1
+
+    rs[0] = r
+
+
+@micropython.viper
 def physics():
     # Viper pointers for quick access to the buffers
     pa = ptr8(particles)
     sa = ptr8(state)
+    rs = ptr32(rng)
+    r = rs[0]
 
     for py in range(1, H-1):
-        for i in range(W):
+        for i in range(W-2):
             # Every other row, reverse processing order to reduce left-right bias
             # (this trick may not be needed anymore, since I added a bias state?)
             if py & 0b1:
@@ -190,12 +288,100 @@ def physics():
             mi = W * py + px   # middle index (particle/state being processed)
 
             mmp, mms = pa[mi], sa[mi]   # middle particle, middle state
-            mmpd = mmp & P_D            # middle particle density
-            mmsb = mms & S_B            # middle state bias flag
 
-            # Skip processing this particle if flagged static (wall) or already moved this frame
+            # Skip processing this particle if flagged static (air, wall, fuse, bomb) or already moved this frame
             if mmp & P_S_STATIC or mms & S_M_MOVED:
                 continue
+
+            pid = mmp & P_ID
+
+            # FIRE: lights fuses, sets off bombs, goes out in water, rises and burns out
+            if pid == I_FIRE:
+                r = (r * 1664525 + 1013904223) & 0x3fffffff
+                rb = r >> 16
+                doused = 0
+                boomed = 0
+                k = 0
+                while k < 4:
+                    if k == 0:
+                        nx, ny = px, py - 1
+                    elif k == 1:
+                        nx, ny = px, py + 1
+                    elif k == 2:
+                        nx, ny = px - 1, py
+                    else:
+                        nx, ny = px + 1, py
+                    ni = W * ny + nx
+                    q = pa[ni] & P_ID
+                    if q == I_WATER:
+                        doused = 1
+                    elif q == I_FUSE:
+                        pa[ni] = P_LIT | (pa[ni] & P_C)
+                        sa[ni] |= S_M_MOVED
+                    elif q == I_BOMB:
+                        rs[0] = r
+                        explode(nx, ny)
+                        r = rs[0]
+                        boomed = 1
+                        break
+                    k += 1
+                if boomed:
+                    continue
+                if doused or (rb & 15) == 0:
+                    pa[mi] = P_AIR
+                    continue
+                c = (rb >> 4) & 3   # flicker
+                # Drift up (straight, or up-left/up-right) about half the time
+                if (rb >> 6) & 1:
+                    d = (rb >> 7) & 3
+                    if d == 0:
+                        ti = mi - W - 1
+                    elif d == 1:
+                        ti = mi - W + 1
+                    else:
+                        ti = mi - W
+                    if (pa[ti] & P_ID) == I_AIR and not sa[ti] & S_M_MOVED:
+                        pa[ti] = P_FIRE | c
+                        sa[ti] |= S_M_MOVED
+                        pa[mi] = P_AIR
+                        continue
+                pa[mi] = P_FIRE | c
+                continue
+
+            # LIT FUSE: sparkles, then burns away and lights the fuse/bombs next to it
+            if pid == I_LIT:
+                r = (r * 1664525 + 1013904223) & 0x3fffffff
+                rb = r >> 16
+                c = (rb >> 3) & 3
+                # Water puts a burning fuse out
+                if ((pa[mi-W] & P_ID) == I_WATER or (pa[mi+W] & P_ID) == I_WATER
+                        or (pa[mi-1] & P_ID) == I_WATER or (pa[mi+1] & P_ID) == I_WATER):
+                    pa[mi] = P_FUSE | c
+                    continue
+                if (rb & 7) != 0:
+                    pa[mi] = P_LIT | c
+                    continue
+                pa[mi] = P_FIRE | c
+                sa[mi] |= S_M_MOVED
+                dy = -1
+                while dy <= 1:
+                    dx = -1
+                    while dx <= 1:
+                        ni = mi + dy * W + dx
+                        q = pa[ni] & P_ID
+                        if q == I_FUSE:
+                            pa[ni] = P_LIT | (pa[ni] & P_C)
+                            sa[ni] |= S_M_MOVED
+                        elif q == I_BOMB:
+                            rs[0] = r
+                            explode(px + dx, py + dy)
+                            r = rs[0]
+                        dx += 1
+                    dy += 1
+                continue
+
+            mmpd = mmp & P_D            # middle particle density
+            mmsb = mms & S_B            # middle state bias flag
 
             # Use bias flag to determine priority (1, 2) when deciding middle sideways movement
             if mmpd == P_D_LIQUID:
@@ -206,7 +392,7 @@ def physics():
                 msp1, mss1 = pa[msi1], sa[msi1]  # m side 1 particle & state
                 msp2, mss2 = pa[msi2], sa[msi2]  # m side 2 particle & state
 
-            di = mi + H                # down index (pixel below)
+            di = mi + W                # down index (pixel below)
             dmp, dms = pa[di], sa[di]   # down particle, down state
 
             # Use bias flag to determine priority (1, 2) when deciding down sideways movement
@@ -214,8 +400,8 @@ def physics():
                 dsi1, dsi2 = di-1, di+1     # down side index 1 & 2
             else:
                 dsi1, dsi2 = di+1, di-1     # down side index 1 & 2
-            dsp2, dss2 = pa[dsi2], sa[dsi2]  # d side 1 particle & state
-            dsp1, dss1 = pa[dsi1], sa[dsi1]  # d side 2 particle & state
+            dsp1, dss1 = pa[dsi1], sa[dsi1]  # d side 1 particle & state
+            dsp2, dss2 = pa[dsi2], sa[dsi2]  # d side 2 particle & state
 
             # If down particle hasn't moved yet and has lighter density
             if not dms & S_M_MOVED and dmp & P_D < mmpd:
@@ -249,6 +435,8 @@ def physics():
             else:
                 sa[si] &= S_B_INV_BIAS
 
+    rs[0] = r
+
     # Reset moved flag for all to be ready for next frame
     for i in range(W*H):
         sa[i] &= S_M_INV_MOVED
@@ -259,10 +447,10 @@ palettes_raw = [
     0xe736, 0xd6d5, 0xdef6, 0xf7b8,  # SAND (ID 1)
     0x63d7, 0x63d7, 0x63d7, 0x63d7,  # WATER (ID 2)
     0xa513, 0xa4f2, 0x94b1, 0x9490,  # WALL (ID 3)
-    0x4208, 0x5ACB, 0x4A49, 0x630C,  # ANT (ID 4) - brown/dark
-    0xFD20, 0xFBE0, 0xFC60, 0xFD00,  # FISH (ID 5) - orange/gold
-    0, 0, 0, 0,  # ID 6 (reserved)
-    0, 0, 0, 0,  # ID 7 (reserved)
+    0x5B66, 0x4AE4, 0x63A7, 0x5345,  # FUSE (ID 4) - green cord
+    0xC926, 0xB0E4, 0xD967, 0xA8A3,  # BOMB (ID 5) - red TNT
+    0xFF8F, 0xFD00, 0xFA80, 0xFFFB,  # FIRE (ID 6) - yellow/orange/red/white
+    0xFFFF, 0xFEE7, 0xFDA0, 0xFF96,  # LIT FUSE (ID 7) - sparks
 ]
 palettes = bytearray([((v >> (8*i)) & 0xFF)
                      for v in palettes_raw for i in range(2)])
@@ -275,26 +463,47 @@ def randomColor(pick):
 
 
 @micropython.viper
-def render():
+def render(oy: int):
+    # oy shifts the picture up/down for screen shake
 
     # Viper pointers for quick access to the buffers
     buf = ptr16(engine_draw.back_fb_data())
     pa = ptr8(particles)
     pal = ptr16(palettes)
 
-    o = 0   # screen index
-    for py in range(1, H-1):
-        for px in range(1, W-1):
-            p = pa[W*py+px]    # particle
-            pal_row = p >> 5
-            pal_col = p & P_C
-            c = pal[pal_row*4+pal_col]
-            buf[o] = c
-            o += 1
+    for sy in range(128):
+        o = sy * 128   # screen index
+        py = sy - oy + 1
+        if py < 1 or py > H-2:
+            for sx in range(128):
+                buf[o + sx] = 0
+            continue
+        row = W * py + 1
+        for sx in range(128):
+            p = pa[row + sx]    # particle
+            buf[o + sx] = pal[(p >> 5)*4 + (p & P_C)]
 
 
 # Fish air timer (frames before death when out of water)
 FISH_AIR_LIMIT = const(180)  # ~3 seconds at 60fps
+
+
+def move_y(c):
+    """Move a creature by its vy one pixel at a time so it can't fall through thin floors."""
+    pa = particles
+    px = int(c.x)
+    y = int(c.y)
+    target = c.y + c.vy
+    ty = int(target)
+    step = 1 if ty > y else -1
+    while y != ty:
+        ny = y + step
+        if ny < 1 or ny > H-2 or (pa[ny*W+px] & P_D) == P_D_SOLID:
+            c.y = y
+            c.vy = 0
+            return
+        y = ny
+    c.y = target
 
 
 def update_ant(c):
@@ -313,12 +522,9 @@ def update_ant(c):
         return
     if py <= 2:
         c.y = 3
-        return
-    if py >= H - 3:
-        c.alive = False  # Fell off bottom
+        c.vy = 0
         return
 
-    idx = py * W + px
     below_idx = (py + 1) * W + px
     below = pa[below_idx]
     below_is_solid = (below & P_D) == P_D_SOLID
@@ -326,16 +532,16 @@ def update_ant(c):
     # Apply gravity if no ground below
     if not below_is_solid:
         c.vy = min(c.vy + 0.2, 2.0)
-        c.y += c.vy
+        move_y(c)
         return
     else:
         c.vy = 0
 
     # Check for water around us (death condition)
     water_count = 0
-    for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+    for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
         ni = (py + dy) * W + (px + dx)
-        if (pa[ni] & P_ID) == (P_WATER & P_ID):
+        if (pa[ni] & P_ID) == I_WATER:
             water_count += 1
 
     # Die if surrounded by water (3+ sides)
@@ -345,15 +551,14 @@ def update_ant(c):
 
     # Check side for water - turn around
     side_idx = py * W + (px + c.dir)
-    if (pa[side_idx] & P_ID) == (P_WATER & P_ID):
+    if (pa[side_idx] & P_ID) == I_WATER:
         c.dir *= -1
         return
 
     # Check if buried (sand above) - dig upward to surface
     above_idx = (py - 1) * W + px
-    above = pa[above_idx]
-    above_id = (above & P_ID) >> 5
-    if above_id == 1:  # SAND above - we're buried!
+    above_id = pa[above_idx] & P_ID
+    if above_id == I_SAND:  # SAND above - we're buried!
         # Dig upward
         pa[above_idx] = P_AIR
         c.y = py - 1
@@ -362,7 +567,7 @@ def update_ant(c):
     # Random hop! (5% chance when on ground)
     if random.random() < 0.05:
         c.vy = -1.5  # Jump up
-        c.y += c.vy
+        move_y(c)
         return
 
     # Random direction change (3% chance) - prevents getting stuck
@@ -373,10 +578,10 @@ def update_ant(c):
     next_x = px + c.dir
     next_idx = py * W + next_x
     next_p = pa[next_idx]
-    next_id = (next_p & P_ID) >> 5
+    next_id = next_p & P_ID
 
     # Check if air ahead
-    if next_id == 0:  # AIR
+    if next_id == I_AIR:
         # Check if ground below next position
         next_below_idx = (py + 1) * W + next_x
         next_below = pa[next_below_idx]
@@ -394,18 +599,18 @@ def update_ant(c):
                 c.dir *= -1
                 if random.random() < 0.3:
                     c.vy = -1.2
-                    c.y += c.vy
+                    move_y(c)
     # Solid ahead - try to climb
     elif (next_p & P_D) == P_D_SOLID:
         # Check if we can climb up (air above us and above-forward)
         above_next_idx = (py - 1) * W + next_x
-        can_climb = above_id == 0 and (pa[above_next_idx] & P_ID) >> 5 == 0
+        can_climb = above_id == I_AIR and (pa[above_next_idx] & P_ID) == I_AIR
 
         if can_climb:
             # Climb up and forward
             c.x = next_x
             c.y = py - 1
-        elif next_id == 1:  # SAND - dig through if can't climb
+        elif next_id == I_SAND:  # dig through if can't climb
             pa[next_idx] = P_AIR
             c.x = next_x
         else:
@@ -413,7 +618,7 @@ def update_ant(c):
             c.dir *= -1
             if random.random() < 0.4:
                 c.vy = -1.5
-                c.y += c.vy
+                move_y(c)
     else:
         c.dir *= -1
 
@@ -428,22 +633,13 @@ def update_fish(c):
         c.alive = False
         return
 
-    idx = py * W + px
-    current_p = pa[idx]
-    current_id = (current_p & P_ID) >> 5
-
-    # Check if in water
-    in_water = current_id == 2  # WATER
-
-    # Also check if surrounded by water
-    water_neighbors = []
-    for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-        ny, nx = py + dy, px + dx
-        if 0 < ny < H-1 and 0 < nx < W-1:
-            ni = ny * W + nx
-            if (pa[ni] & P_ID) >> 5 == 2:  # WATER
-                water_neighbors.append((ny, nx))
+    # In water if on a water pixel or next to one
+    in_water = (pa[py * W + px] & P_ID) == I_WATER
+    if not in_water:
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            if (pa[(py + dy) * W + px + dx] & P_ID) == I_WATER:
                 in_water = True
+                break
 
     if in_water:
         c.timer = 0
@@ -462,23 +658,23 @@ def update_fish(c):
             bob_dir = random.choice([-1, 1])
             new_y = py + bob_dir
             new_idx = new_y * W + px
-            if 0 < new_y < H-1 and (pa[new_idx] & P_ID) >> 5 == 2:  # WATER
+            if 0 < new_y < H-1 and (pa[new_idx] & P_ID) == I_WATER:
                 c.y = new_y
                 return
 
         # Try to swim horizontally
         next_x = px + c.dir
         next_idx = py * W + next_x
-        next_id = (pa[next_idx] & P_ID) >> 5
+        next_id = pa[next_idx] & P_ID
 
-        if next_id == 2:  # WATER ahead
+        if next_id == I_WATER:
             c.x = next_x
         else:
             # Blocked - try moving up or down first
             up_idx = (py - 1) * W + px
             down_idx = (py + 1) * W + px
-            can_up = py > 1 and (pa[up_idx] & P_ID) >> 5 == 2
-            can_down = py < H - 2 and (pa[down_idx] & P_ID) >> 5 == 2
+            can_up = py > 1 and (pa[up_idx] & P_ID) == I_WATER
+            can_down = py < H - 2 and (pa[down_idx] & P_ID) == I_WATER
 
             if can_up and can_down:
                 c.y += random.choice([-1, 1])
@@ -493,11 +689,23 @@ def update_fish(c):
         # Out of water
         c.timer += 1
         c.vy = min(c.vy + 0.1, 1.0)
-        c.y += c.vy
+        move_y(c)
 
         # Die if out too long
         if c.timer >= FISH_AIR_LIMIT:
             c.alive = False
+
+
+def creature_on_fire(c):
+    """True if the creature's body is touching fire."""
+    pa = particles
+    idx = int(c.y) * W + int(c.x)
+    if (pa[idx] & P_ID) == I_FIRE:
+        return True
+    # Ants are drawn standing on their pixel, so check their head too
+    if c.ctype == CREATURE_ANT and c.y > 4 and (pa[idx - 3*W] & P_ID) == I_FIRE:
+        return True
+    return False
 
 
 def update_creatures():
@@ -510,30 +718,34 @@ def update_creatures():
         if not c.alive:
             continue
 
+        if creature_on_fire(c):
+            c.alive = False
+            c.burnt = True
+            continue
+
         if c.ctype == CREATURE_ANT:
             update_ant(c)
         elif c.ctype == CREATURE_FISH:
             update_fish(c)
 
-        # Clamp position (with margin for larger creature sprites)
-        c.x = max(5, min(W - 6, c.x))
-        c.y = max(5, min(H - 6, c.y))
+        # Keep inside the walls
+        c.x = max(2, min(W - 3, c.x))
+        c.y = max(2, min(H - 2, c.y))
 
     # Remove dead creatures, leave corpses
     new_creatures = []
     for c in creatures:
         if c.alive:
             new_creatures.append(c)
-        else:
+        elif not c.burnt:
             # Leave corpse (sand particle)
             idx = int(c.y) * W + int(c.x)
-            if 0 < idx < W * H:
-                pa[idx] = randomColor(P_SAND)
+            pa[idx] = randomColor(P_SAND)
 
     creatures = new_creatures
 
 
-def draw_creatures():
+def draw_creatures(oy):
     """Draw creatures as shapes on the framebuffer."""
     fb = engine_draw.back_fb()
     for c in creatures:
@@ -541,10 +753,11 @@ def draw_creatures():
             continue
         # Convert to screen coords (particle buffer has 1px border)
         sx = int(c.x) - 1
-        sy = int(c.y) - 1
+        sy = int(c.y) - 1 + oy
 
         if c.ctype == CREATURE_ANT:
-            # Draw ant as filled circle with white border
+            # Draw ant as filled circle with white border, standing on its pixel
+            sy -= 3
             col = 0x4208  # Brown
             border = 0xFFFF  # White
             # White border (outline)
@@ -807,11 +1020,54 @@ def shapePhysics():
         s.v2.dy -= fy / s.v2.mass
 
 
+# Explosion effects
+try:
+    boom_sound = WaveSoundResource("boom.wav")
+except Exception:
+    boom_sound = None
+shake = 0           # Frames of screen shake left
+boom_cooldown = 0   # Frames before the boom sound can play again
+
+
+def handle_booms():
+    """Sound, shake, and knock things around for any explosions this frame."""
+    global shake, boom_cooldown
+    if boom_cooldown > 0:
+        boom_cooldown -= 1
+    n = booms[0]
+    if n == 0:
+        return
+    booms[0] = 0
+    shake = 10
+    if boom_sound is not None and boom_cooldown == 0:
+        engine_audio.play(boom_sound, 0, False)
+        boom_cooldown = 8
+    reach = BOOM_R + 3
+    for k in range(n):
+        bx = booms[1 + k*2]
+        by = booms[2 + k*2]
+        # Creatures caught in the blast are gone
+        for c in creatures:
+            if abs(c.x - bx) <= reach and abs(c.y - by) <= reach:
+                c.alive = False
+                c.burnt = True
+        # Fling the floating square away from the blast
+        for v in vertices:
+            dx = v.x - (bx - 1)
+            dy = v.y - (by - 1)
+            d = math.sqrt(dx*dx + dy*dy)
+            if 0 < d < 30:
+                push = (30 - d) / 10
+                v.dx += dx / d * push
+                v.dy += dy / d * push
+
+
 cpx = W//2     # Cursor X
 cpy = H//3     # Cursor Y
 cdx = 0        # Cursor X Speed
 cdy = 0        # Cursor Y Speed
-cpick = 0   # Cursor particle selection
+cpick = 0   # Cursor tool selection
+tool_label_timer = 90   # Frames to show the tool name for (shown at start too)
 
 CURSOR_ACCEL = const(0.2)
 CURSOR_MAX_SPEED = const(2)
@@ -848,15 +1104,7 @@ while True:
                     engine.end()
                     break
                 elif pause_menu_selection == 2:  # Clear
-                    for i in range(W * H):
-                        particles[i] = P_AIR
-                    # Restore walls
-                    for px in range(W):
-                        particles[px] = P_WALL
-                        particles[W*(H-1)+px] = P_WALL
-                    for py in range(H):
-                        particles[py*W] = P_WALL
-                        particles[py*W+(W-1)] = P_WALL
+                    reset_particles()
                     creatures.clear()
                     pause_menu_active = False
                 elif pause_menu_selection == 3:  # Quit
@@ -864,8 +1112,8 @@ while True:
                     break
 
             # Draw game frame then menu overlay
-            render()
-            draw_creatures()
+            render(0)
+            draw_creatures(0)
             draw_pause_menu()
             continue
 
@@ -889,53 +1137,70 @@ while True:
             cdy = max(-CURSOR_MAX_SPEED, min(CURSOR_MAX_SPEED, cdy + cay))
         else:
             cdy *= CURSOR_DRAG
-        cpx = max(1, min(W-3, cpx + cdx))
-        cpy = max(1, min(H-3, cpy + cdy))
+        # The 3x3 brush covers cx..cx+2, so stop before it reaches the edge walls
+        cpx = max(1, min(W-4, cpx + cdx))
+        cpy = max(1, min(H-4, cpy + cdy))
 
-        # Cycle particle selection
+        # Cycle tool selection
         if engine_io.RB.is_just_pressed:
-            cpick = (cpick + 1) % len(Picks)
+            cpick = (cpick + 1) % len(Tools)
+            tool_label_timer = 60
         if engine_io.LB.is_just_pressed:
-            cpick = (cpick + len(Picks) - 1) % len(Picks)
+            cpick = (cpick + len(Tools) - 1) % len(Tools)
+            tool_label_timer = 60
 
         # Rounded to nearest pixel
         cx = int(cpx)
         cy = int(cpy)
 
+        tool_name, tool, tool_color = Tools[cpick]
+
         # Draw particles or spawn creatures near cursor
         if engine_io.A.is_pressed:
-            p = Picks[cpick]
-            p_id = (p & P_ID) >> 5
-
             # Creature spawning (single creature, not 3x3)
-            if p_id == 4:  # ANT
+            if tool == TOOL_ANT or tool == TOOL_FISH:
                 if len(creatures) < MAX_CREATURES and engine_io.A.is_just_pressed:
-                    creatures.append(Creature(cx + 1, cy + 1, CREATURE_ANT))
-            elif p_id == 5:  # FISH
-                if len(creatures) < MAX_CREATURES and engine_io.A.is_just_pressed:
-                    creatures.append(Creature(cx + 1, cy + 1, CREATURE_FISH))
+                    ctype = CREATURE_ANT if tool == TOOL_ANT else CREATURE_FISH
+                    creatures.append(Creature(cx + 1, cy + 1, ctype))
+            elif tool == P_FIRE:
+                # Fire only goes into empty space, and lights whatever it touches
+                for y in range(3):
+                    for x in range(3):
+                        i = (cy+y)*W + cx+x
+                        q = particles[i] & P_ID
+                        if q == I_AIR:
+                            particles[i] = randomColor(P_FIRE)
+                        elif q == I_FUSE:
+                            particles[i] = P_LIT | (particles[i] & P_C)
+                        elif q == I_BOMB:
+                            explode(cx+x, cy+y)
             else:
                 # Normal particle spawning
                 for y in range(3):
                     for x in range(3):
-                        particles[(cy+y)*W+cx+x] = randomColor(p)
+                        particles[(cy+y)*W+cx+x] = randomColor(tool)
 
         # Remove particles near cursor (and kill creatures)
         if engine_io.B.is_pressed:
+            for c in creatures:
+                if abs(c.x - (cx + 1)) <= 2 and abs(c.y - (cy + 1)) <= 3:
+                    c.alive = False
             for y in range(3):
                 for x in range(3):
-                    px, py = cx + x, cy + y
-                    # Kill any creatures in this area
-                    for c in creatures:
-                        if int(c.x) == px and int(c.y) == py:
-                            c.alive = False
-                    particles[py*W+px] = P_AIR
+                    particles[(cy+y)*W+cx+x] = P_AIR
 
         # Once each frame, update physics, creatures, and render
         physics()
+        handle_booms()
         update_creatures()
-        render()
-        draw_creatures()
+
+        oy = 0
+        if shake > 0:
+            amp = (shake + 2) // 3
+            oy = random.randint(-amp, amp)
+            shake -= 1
+        render(oy)
+        draw_creatures(oy)
 
         # Shape Physics
         shapePhysics()
@@ -952,5 +1217,11 @@ while True:
 
         # Overlay cursor
         fb.line(cx+1, cy+1, cx+3, cy+3, 0x0000)
-        fb.rect(cx+3, cy+3, 5, 5, palettes_raw[4*(Picks[cpick] >> 5)], True)
+        fb.rect(cx+3, cy+3, 5, 5, tool_color, True)
         fb.rect(cx+3, cy+3, 5, 5, 0x0000, False)
+
+        # Show the tool name for a moment after switching
+        if tool_label_timer > 0:
+            tool_label_timer -= 1
+            fb.rect(1, 1, len(tool_name) * 8 + 4, 11, 0x0000, True)
+            fb.text(tool_name, 3, 3, tool_color)
