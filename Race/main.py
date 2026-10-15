@@ -33,6 +33,8 @@ engine_save.set_location("save")
 # Game state
 state = 0  # 0=betting, 1=bet_amount, 2=racing, 3=result
 money = engine_save.load("money", STARTING_MONEY)
+if money <= 0:
+    money = STARTING_MONEY
 selected_racer = 0
 bet_amount = 10
 winner = -1
@@ -135,6 +137,12 @@ money_text.text = "$100"
 # Main game loop
 while True:
     if engine.tick():
+        # Save and exit on MENU (checked before cooldown so it's never swallowed)
+        if engine_io.MENU.is_just_pressed:
+            engine_save.save("money", money)
+            engine.end()
+            break
+
         # Input cooldown
         if input_cooldown > 0:
             input_cooldown -= 1
@@ -172,7 +180,7 @@ while True:
                 bet_amount = min(bet_amount + 10, money)
                 input_cooldown = 5
             elif engine_io.DOWN.is_just_pressed:
-                bet_amount = max(bet_amount - 10, 10)
+                bet_amount = min(max(bet_amount - 10, 10), money)
                 input_cooldown = 5
             elif engine_io.A.is_just_pressed:
                 reset_race()
@@ -203,21 +211,22 @@ while True:
                         halfway_rerolled = True
                         break
 
-            # Check winner
+            # Check winner (on a same-frame tie, the racer furthest ahead wins)
             for i in range(NUM_RACERS):
                 if racers[i].position.x >= FINISH_X:
-                    winner = i
-                    # Track win history
-                    race_history.append(winner)
-                    if len(race_history) > 3:
-                        race_history.pop(0)
-                    # Update money
-                    if winner == selected_racer:
-                        money += bet_amount * (PAYOUT_MULTIPLIER - 1)
-                    else:
-                        money -= bet_amount
-                    state = 3
-                    break
+                    if winner == -1 or racers[i].position.x > racers[winner].position.x:
+                        winner = i
+            if winner != -1:
+                # Track win history
+                race_history.append(winner)
+                if len(race_history) > 3:
+                    race_history.pop(0)
+                # Update money
+                if winner == selected_racer:
+                    money += bet_amount * (PAYOUT_MULTIPLIER - 1)
+                else:
+                    money -= bet_amount
+                state = 3
 
             if halfway_rerolled:
                 ui_text.text = "SPEED BOOST!"
@@ -248,9 +257,3 @@ while True:
         # Reset text color for non-result states
         if state != 3:
             ui_text.color = engine_draw.white
-
-        # Save and exit on MENU
-        if engine_io.MENU.is_just_pressed:
-            engine_save.save("money", money)
-            engine.end()
-            break

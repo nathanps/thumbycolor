@@ -109,13 +109,13 @@ left_texts = []
 right_texts = []
 for i in range(5):
     lt = Text2DNode()
-    lt.position = Vector2(-40, -30 + i * 12)
+    lt.position = Vector2(-32, -30 + i * 12)
     lt.color = engine_draw.white
     lt.text = ""
     left_texts.append(lt)
 
     rt = Text2DNode()
-    rt.position = Vector2(20, -30 + i * 12)
+    rt.position = Vector2(32, -30 + i * 12)
     rt.color = engine_draw.white
     rt.text = ""
     right_texts.append(rt)
@@ -383,9 +383,9 @@ def update_menu_display():
 
 
 def format_problem(problem):
-    """Format a problem tuple as a string like '3 + 4 = 7'"""
+    """Format a problem tuple as a compact string like '3+4=7' (fits a half-screen column)"""
     a, b, op, answer = problem
-    return str(a) + " " + op + " " + str(b) + " = " + str(answer)
+    return str(a) + op + str(b) + "=" + str(answer)
 
 
 def show_read_aloud():
@@ -482,6 +482,7 @@ def show_feedback(is_correct, is_timeout=False):
     timer_text.opacity = 0
     if not is_correct:
         show_wrong_border(True)
+        progress_text.opacity = 0  # avoid overlapping the instruction line; show_quiz restores it
         instruction_text.opacity = 1
         instruction_text.text = "A: Continue"
 

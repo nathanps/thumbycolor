@@ -409,6 +409,7 @@ def show_feedback(is_correct, is_timeout=False):
     # Show red border and continue instruction if wrong or timeout
     if not is_correct:
         show_wrong_border(True)
+        progress_text.opacity = 0  # avoid overlapping the instruction line; show_quiz restores it
         instruction_text.opacity = 1
         instruction_text.text = "A: Continue"
 

@@ -41,6 +41,7 @@ BUCKET_MAX_X = 45
 BALL1_START_X = -15
 BALL2_START_X = 15
 BALL_START_Y = -55
+MAX_BALL_SPEED = 4  # Clamp for each velocity component
 
 # === Game State ===
 state = STATE_SELECT_1
@@ -79,6 +80,9 @@ def create_wall(x, y, width, height, color=engine_draw.darkgrey):
 # Side walls
 left_wall, left_wall_vis = create_wall(-60, 0, 4, 128)
 right_wall, right_wall_vis = create_wall(60, 0, 4, 128)
+# Ceiling just above the top of the screen (invisible) so nudges can't launch balls away
+ceiling, ceiling_vis = create_wall(0, -66, 124, 4)
+ceiling_vis.opacity = 0
 
 # Bucket walls and floor
 bucket_left_wall, bucket_left_vis = create_wall(BUCKET_LEFT - 5, BUCKET_Y + 5, 6, BUCKET_WALL_HEIGHT, engine_draw.green)
@@ -312,13 +316,14 @@ def move_bucket():
     bucket_floor.position.x = bucket_x
 
 def check_winner():
-    global winner, state
+    global winner, state, input_cooldown
     for ball in balls:
         pos = ball.physics.position
         if pos.y > BUCKET_Y:
             if (bucket_x + BUCKET_LEFT) < pos.x < (bucket_x + BUCKET_RIGHT):
                 winner = ball.player_id
                 state = STATE_RESULT
+                input_cooldown = 60  # Don't let a held/mashed A skip the winner screen
                 return True
     return False
 
@@ -424,7 +429,7 @@ while True:
             if countdown_timer >= 60:  # 1 second per count
                 countdown_timer = 0
                 countdown_value -= 1
-                if countdown_value < -1:  # After "GO!" displays for 1 second
+                if countdown_value < 0:  # After "GO!" displays for 1 second
                     state = STATE_PLAYING
                     countdown_text.opacity = 0
                     # Reset and show balls
@@ -448,6 +453,12 @@ while True:
                 for ball in balls:
                     ball.physics.velocity.x += 0.75
                     ball.physics.velocity.y -= 0.5
+            for ball in balls:
+                # Cap speed so held bumpers / bouncy pins can't fling balls away
+                vel = ball.physics.velocity
+                vel.x = max(-MAX_BALL_SPEED, min(MAX_BALL_SPEED, vel.x))
+                vel.y = max(-MAX_BALL_SPEED, min(MAX_BALL_SPEED, vel.y))
+                ball.check_stuck()
 
         elif state == STATE_RESULT:
             winner_text.opacity = 1.0

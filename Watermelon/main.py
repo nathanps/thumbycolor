@@ -31,8 +31,9 @@ GRAVITY_TILT_X = 0.19  # Max tilt
 GRAVITY_TILT_Y = -0.08
 TILT_SPEED = 0.02  # How fast tilt changes
 
-# Death threshold - vertical velocity that causes splat (lower for lighter gravity)
-DEATH_VELOCITY_THRESHOLD = 1.5
+# Death threshold - downward landing speed that causes splat (falling = positive Y velocity).
+# A normal jump lands at ~2.0 and a jump off a platform at ~2.65.
+DEATH_VELOCITY_THRESHOLD = 2.4
 
 # Jump force
 JUMP_FORCE = 2
@@ -111,8 +112,8 @@ class Watermelon:
 
         current_vel_y = self.physics.velocity.y
 
-        # Detect hard impact: was falling fast (negative Y), now stopped
-        if self.prev_velocity_y < -DEATH_VELOCITY_THRESHOLD and abs(current_vel_y) < 0.5:
+        # Detect hard impact: was falling fast (positive Y), now stopped or bounced
+        if self.prev_velocity_y > DEATH_VELOCITY_THRESHOLD and current_vel_y < 0.5:
             self.alive = False
             return False
 
@@ -192,6 +193,7 @@ class GroundManager:
         self.last_was_gap = False
         self.need_exit_ramp = False
         self.current_y = GROUND_Y_BASE
+        self.safe_until = 0  # Force flat ground while next_segment_x is below this
         self._create_pool()
 
     def _create_pool(self):
@@ -256,7 +258,7 @@ class GroundManager:
 
         idx = self._get_available_segment(camera_x)
         if idx == -1:
-            return  # No available segments
+            return False  # No available segments
 
         # If we just came out of a gap, create an upward exit ramp
         if self.need_exit_ramp:
@@ -265,15 +267,17 @@ class GroundManager:
             self._configure_segment(idx, x, ramp_y, RAMP_LENGTH, GROUND_HEIGHT,
                                    -RAMP_ANGLE, engine_draw.lightgrey)
             self.next_segment_x = x + RAMP_LENGTH - 2
-            return
+            return True
 
         # Random height variation
         y_offset = (urandom.getrandbits(3) - 4)
         y = GROUND_Y_BASE + y_offset
         self.current_y = y
 
-        # Don't allow consecutive gaps
-        if self.last_was_gap:
+        # Safe flat ground around the spawn point; don't allow consecutive gaps
+        if x < self.safe_until:
+            segment_type = 0
+        elif self.last_was_gap:
             segment_type = urandom.getrandbits(4) % 9
         else:
             segment_type = urandom.getrandbits(4)
@@ -316,10 +320,13 @@ class GroundManager:
             self.last_was_gap = True
             self.need_exit_ramp = True
 
+        return True
+
     def update(self, camera_x):
         """Generate new segments ahead"""
         while self.next_segment_x < camera_x + SCREEN_WIDTH * 1.5:
-            self.generate_segment(camera_x)
+            if not self.generate_segment(camera_x):
+                break  # Pool full - try again next frame
 
         if camera_x > self.furthest_x:
             self.furthest_x = camera_x
@@ -335,10 +342,12 @@ class GroundManager:
         self.last_was_gap = False
         self.need_exit_ramp = False
         self.current_y = GROUND_Y_BASE
+        self.safe_until = 64  # Solid ground under and ahead of the spawn point
 
         # Generate initial ground
         for _ in range(8):
-            self.generate_segment(0)
+            if not self.generate_segment(0):
+                break
 
     def get_distance_score(self):
         return max(0, int(self.furthest_x / 10))

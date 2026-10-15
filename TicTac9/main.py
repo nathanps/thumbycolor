@@ -106,35 +106,39 @@ for board_idx in range(9):
         line.layer = 1
         grid_lines.append(line)
 
-# Active board highlight (yellow border)
+# Active board highlight (yellow border, outline only so grid lines stay visible)
 highlight = Rectangle2DNode()
 highlight.width = BOARD_SIZE + 2
 highlight.height = BOARD_SIZE + 2
 highlight.color = engine_draw.yellow
+highlight.outline = True
 highlight.layer = 2
 highlight.opacity = 0
 
-# Highlight inner (to create border effect)
+# Second outline just inside the first for a 2px border
 highlight_inner = Rectangle2DNode()
-highlight_inner.width = BOARD_SIZE - 2
-highlight_inner.height = BOARD_SIZE - 2
-highlight_inner.color = engine_draw.darkgrey
-highlight_inner.layer = 3
+highlight_inner.width = BOARD_SIZE
+highlight_inner.height = BOARD_SIZE
+highlight_inner.color = engine_draw.yellow
+highlight_inner.outline = True
+highlight_inner.layer = 2
 highlight_inner.opacity = 0
 
-# Cursor
+# Cursor (outline only so the mark under it stays visible)
 cursor = Rectangle2DNode()
 cursor.width = CELL_SIZE
 cursor.height = CELL_SIZE
 cursor.color = engine_draw.red
+cursor.outline = True
 cursor.layer = 5
 
-# Cursor inner (to create outline effect)
+# Cursor inner outline (2px border); below marks so it never covers them
 cursor_inner = Rectangle2DNode()
-cursor_inner.width = CELL_SIZE - 4
-cursor_inner.height = CELL_SIZE - 4
-cursor_inner.color = engine_draw.darkgrey
-cursor_inner.layer = 6
+cursor_inner.width = CELL_SIZE - 2
+cursor_inner.height = CELL_SIZE - 2
+cursor_inner.color = engine_draw.red
+cursor_inner.outline = True
+cursor_inner.layer = 3
 
 # Board win overlays (big X or O shown when board is won)
 board_win_texts = []
@@ -235,13 +239,13 @@ def init_game():
         txt.opacity = 0
         txt.text = ""
 
-    # Remove all marks
+    # Remove all marks (destroy nodes so they don't pile up across games)
     for r1, r2 in x_marks:
-        r1.opacity = 0
-        r2.opacity = 0
+        r1.mark_destroy()
+        r2.mark_destroy()
     for c_outer, c_inner in o_marks:
-        c_outer.opacity = 0
-        c_inner.opacity = 0
+        c_outer.mark_destroy()
+        c_inner.mark_destroy()
     x_marks.clear()
     o_marks.clear()
 
@@ -330,7 +334,7 @@ def check_game_win():
 
 def make_move(board_idx, cell_idx):
     """Execute a move and update game state"""
-    global current_player, required_board, cursor_board
+    global current_player, required_board, cursor_board, cursor_cell
 
     cell_global = board_idx * 9 + cell_idx
     cells[cell_global] = current_player
@@ -362,6 +366,16 @@ def make_move(board_idx, cell_idx):
         # If cursor is in invalid position, move it
         if required_board != -1 and cursor_board != required_board:
             cursor_board = required_board
+        elif required_board == -1 and board_states[cursor_board] != BOARD_ACTIVE:
+            # Free choice but cursor is on a finished board: jump to first playable cell
+            for b in range(9):
+                if board_states[b] == BOARD_ACTIVE:
+                    for c in range(9):
+                        if cells[b * 9 + c] == EMPTY:
+                            cursor_board = b
+                            cursor_cell = c
+                            break
+                    break
 
         update_cursor()
         update_highlight()
@@ -418,20 +432,16 @@ def update_cursor():
     cursor.position = Vector2(px, py)
     cursor_inner.position = Vector2(px, py)
 
-    if current_player == PLAYER_X:
+    # Player color on playable boards; contrasting color on finished boards
+    if board_states[cursor_board] == BOARD_TIED:
+        cursor.color = engine_draw.darkgrey
+    elif board_states[cursor_board] != BOARD_ACTIVE:
+        cursor.color = engine_draw.white
+    elif current_player == PLAYER_X:
         cursor.color = engine_draw.red
     else:
         cursor.color = engine_draw.blue
-
-    # Update inner color based on board state
-    if board_states[cursor_board] == BOARD_WON_X:
-        cursor_inner.color = engine_draw.red
-    elif board_states[cursor_board] == BOARD_WON_O:
-        cursor_inner.color = engine_draw.blue
-    elif board_states[cursor_board] == BOARD_TIED:
-        cursor_inner.color = engine_draw.lightgrey
-    else:
-        cursor_inner.color = engine_draw.darkgrey
+    cursor_inner.color = cursor.color
 
 def update_highlight():
     """Update active board highlight"""
