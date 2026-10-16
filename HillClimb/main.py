@@ -2,11 +2,8 @@ import engine_main
 import engine
 import engine_draw
 import engine_io
-import engine_physics
 import engine_save
-from engine_nodes import (Rectangle2DNode, Text2DNode, CameraNode,
-                          Circle2DNode, PhysicsRectangle2DNode,
-                          PhysicsCircle2DNode)
+from engine_nodes import Rectangle2DNode, Text2DNode, CameraNode, Circle2DNode
 from engine_math import Vector2
 import urandom
 import math
@@ -34,15 +31,25 @@ MAX_VELOCITY = 3.0
 ROTATION_SMOOTHING = 0.15
 
 # Terrain generation
-SEGMENT_WIDTH = 20
-TERRAIN_AMPLITUDE = 25  # Max hill height variation
-TERRAIN_FREQUENCY = 0.08  # How often hills occur
-TERRAIN_POOL_SIZE = 20
+SEGMENT_STEP = 16        # Ground is drawn as straight pieces this wide
+TERRAIN_POOL_SIZE = 28   # Enough pieces to cover the screen plus a stretch behind
+TERRAIN_BASE_Y = 30      # Height of the flat start
+FLAT_UNTIL = 120         # Flat starting area length
+HILL_FADE_IN = 200       # Hills grow smoothly from flat over this distance
+HILL_AMP_START = 10      # Hill size near the start
+HILL_AMP_MAX = 26        # Biggest hills (reached at HILL_GROWTH_DIST)
+HILL_GROWTH_DIST = 3000  # ~300 m
+GROUND_BAND = 16         # Thickness of the sloped grass+dirt strip
+SLOPE_PULL = 1.0         # How strongly hills slow you down / speed you up
+AIR_GRACE = 3            # Frames off the ground that still count as driving (tiny bumps)
+LANDING_MAX_ANGLE = 1.3  # Landing more tilted than this (radians) wrecks the car
 
 # Fuel system
 MAX_FUEL = 100
 FUEL_CONSUMPTION = 0.15  # Per frame when accelerating
-FUEL_BONUS_DISTANCE = 200  # Get fuel bonus every this many units
+FUEL_SPACING_START = 400   # Distance between fuel cans at the start
+FUEL_SPACING_GROWTH = 0.12 # Cans get further apart the further you go
+FUEL_SPACING_MAX = 1200
 
 # === Save System ===
 engine_save._init_saves_dir("Saves/Games/HillClimb")
@@ -51,7 +58,6 @@ high_score = engine_save.load("high_score", 0)
 
 # === Engine Setup ===
 engine.fps_limit(60)
-engine_physics.set_gravity(GRAVITY_X, GRAVITY_Y)
 
 # === Camera ===
 camera = CameraNode()
@@ -62,135 +68,143 @@ class TerrainManager:
     """Generates procedural hilly terrain similar to Hill Climb Racing"""
 
     def __init__(self):
-        self.segments = []  # Physics bodies
-        self.visuals = []   # Visual rectangles
-        self.segment_data = []  # Position and height data
+        self.strips = []    # Sloped grass+dirt strip for each piece
+        self.columns = []   # Upright dirt column under each piece
+        self.piece_end = [] # Right edge x of each piece (-9999 = unused)
         self.next_x = -SCREEN_WIDTH
-        self.seed = 0
-        self.difficulty = 1.0  # Increases over distance
+        self.furthest_x = 0
+        self._new_hill_shape()
         self._create_pool()
 
     def _create_pool(self):
-        """Pre-create terrain segment objects"""
+        """Pre-create terrain piece objects"""
         for _ in range(TERRAIN_POOL_SIZE):
-            physics = PhysicsRectangle2DNode()
-            physics.width = SEGMENT_WIDTH + 4  # Overlap slightly
-            physics.height = 15
-            physics.dynamic = False
-            physics.bounciness = 0.1
-            physics.friction = 0.9
-            physics.position = Vector2(-9999, -9999)
+            # Dirt strip that follows the slope, with grass on top
+            strip = Rectangle2DNode()
+            strip.height = GROUND_BAND
+            strip.color = engine_draw.brown
+            strip.layer = 4
+            strip.position = Vector2(-9999, -9999)
 
-            # Green grass top
             grass = Rectangle2DNode()
-            grass.width = SEGMENT_WIDTH + 4
-            grass.height = 5
+            grass.height = 3
             grass.color = engine_draw.green
-            grass.position = Vector2(0, -5)
+            grass.position = Vector2(0, -GROUND_BAND / 2 + 1.5)
             grass.layer = 5
-            physics.add_child(grass)
+            strip.add_child(grass)
 
-            # Brown dirt
-            dirt = Rectangle2DNode()
-            dirt.width = SEGMENT_WIDTH + 4
-            dirt.height = 10
-            dirt.color = engine_draw.brown
-            dirt.position = Vector2(0, 2)
-            dirt.layer = 4
-            physics.add_child(dirt)
+            # Deep dirt below so no sky shows under the hills
+            column = Rectangle2DNode()
+            column.height = 100
+            column.color = engine_draw.brown
+            column.layer = 3
+            column.position = Vector2(-9999, -9999)
 
-            self.segments.append(physics)
-            self.visuals.append((grass, dirt))
-            self.segment_data.append({'x': -9999, 'y': 0, 'active': False})
+            self.strips.append((strip, grass))
+            self.columns.append(column)
+            self.piece_end.append(-9999)
+
+    def _new_hill_shape(self):
+        """Pick random wave phases and lengths so every run has different hills"""
+        def r():
+            return urandom.getrandbits(16) / 65536
+        self.p1 = r() * 6.28
+        self.p2 = r() * 6.28
+        self.p3 = r() * 6.28
+        self.p4 = r() * 6.28
+        self.f1 = 0.018 * (0.85 + r() * 0.3)   # Big rolling hills
+        self.f2 = 0.041 * (0.85 + r() * 0.3)   # Medium hills
+        self.f3 = 0.09 * (0.85 + r() * 0.3)    # Small bumps
 
     def _get_terrain_height(self, x):
-        """Generate terrain height using layered sine waves (pseudo-Perlin)"""
-        # Flat starting area
-        if x < 100:
-            return 30
+        """Ground y at x: layered sine waves that fade in and grow with distance"""
+        if x <= FLAT_UNTIL:
+            return TERRAIN_BASE_Y
+        d = x - FLAT_UNTIL
 
-        # Mix of sine waves at different frequencies for natural-looking terrain
-        adjusted_x = x - 100
+        # Hills get bigger the further you go
+        amp = HILL_AMP_START + (HILL_AMP_MAX - HILL_AMP_START) * min(1.0, d / HILL_GROWTH_DIST)
+        # Ease in from the flat start (smoothstep, so no bump or cliff)
+        if d < HILL_FADE_IN:
+            t = d / HILL_FADE_IN
+            amp *= t * t * (3 - 2 * t)
+        # Alternate calmer and wilder stretches
+        amp *= 0.75 + 0.25 * math.sin(d * 0.004 + self.p4)
 
-        # Primary hill shape
-        h1 = math.sin(adjusted_x * TERRAIN_FREQUENCY * 0.5) * TERRAIN_AMPLITUDE
-        # Secondary variation
-        h2 = math.sin(adjusted_x * TERRAIN_FREQUENCY * 1.3 + 1.5) * TERRAIN_AMPLITUDE * 0.5
-        # Small bumps
-        h3 = math.sin(adjusted_x * TERRAIN_FREQUENCY * 3.7 + 0.7) * TERRAIN_AMPLITUDE * 0.2
+        h = (0.6 * math.sin(d * self.f1 + self.p1)
+             + 0.3 * math.sin(d * self.f2 + self.p2)
+             + 0.1 * math.sin(d * self.f3 + self.p3))
+        return TERRAIN_BASE_Y - amp * h
 
-        # Random variation based on position (deterministic)
-        seed_val = int(adjusted_x / SEGMENT_WIDTH) + self.seed
-        urandom.seed(seed_val)
-        random_offset = (urandom.getrandbits(4) - 8) * self.difficulty * 0.3
-
-        # Increase difficulty (steeper hills) over distance
-        self.difficulty = 1.0 + (adjusted_x / 1000.0) * 0.5
-
-        base_height = 30
-        return base_height + (h1 + h2 + h3 + random_offset) * min(self.difficulty, 2.0)
-
-    def _get_terrain_angle(self, x):
-        """Calculate terrain angle at position x"""
-        h1 = self._get_terrain_height(x - 5)
-        h2 = self._get_terrain_height(x + 5)
-        return -math.atan2(h2 - h1, 10)  # Negated for correct visual rotation
-
-    def _get_available_segment(self, camera_x):
-        """Find a segment off-screen left for reuse"""
-        cleanup_x = camera_x - SCREEN_WIDTH - 50
-        for i, data in enumerate(self.segment_data):
-            if not data['active'] or data['x'] < cleanup_x:
+    def _get_available_piece(self):
+        """Find a piece far enough behind to reuse"""
+        cleanup_x = self.furthest_x - SCREEN_WIDTH - 120
+        for i in range(TERRAIN_POOL_SIZE):
+            if self.piece_end[i] < cleanup_x:
                 return i
         return -1
 
-    def generate_segment(self, camera_x):
-        """Generate next terrain segment. Returns False if no segment available."""
-        x = self.next_x
-        y = self._get_terrain_height(x)
-        angle = self._get_terrain_angle(x)
-
-        idx = self._get_available_segment(camera_x)
+    def generate_segment(self):
+        """Place the next straight piece of ground. Returns False if none are free."""
+        idx = self._get_available_piece()
         if idx == -1:
             return False
 
-        physics = self.segments[idx]
-        physics.position = Vector2(x, y)
-        physics.rotation = angle
+        # Each piece runs exactly between two points on the curve, so pieces always meet
+        x0 = self.next_x
+        x1 = x0 + SEGMENT_STEP
+        y0 = self._get_terrain_height(x0)
+        y1 = self._get_terrain_height(x1)
+        dx = x1 - x0
+        dy = y1 - y0
+        angle = -math.atan2(dy, dx)  # Negated for the engine's rotation direction
 
-        # Update visuals
-        grass, dirt = self.visuals[idx]
+        strip, grass = self.strips[idx]
+        strip.width = math.sqrt(dx * dx + dy * dy) + 2
+        grass.width = strip.width
+        strip.rotation = angle
+        # Centre the strip half its thickness below the curve, perpendicular to the slope
+        half = GROUND_BAND / 2
+        strip.position = Vector2((x0 + x1) / 2 + half * math.sin(angle),
+                                 (y0 + y1) / 2 + half * math.cos(angle))
 
-        self.segment_data[idx] = {'x': x, 'y': y, 'active': True}
-        self.next_x = x + SEGMENT_WIDTH - 2
+        column = self.columns[idx]
+        column.width = dx + 2
+        column.position = Vector2((x0 + x1) / 2, max(y0, y1) + column.height / 2)
+
+        self.piece_end[idx] = x1
+        self.next_x = x1
+        return True
 
     def update(self, camera_x):
-        """Generate new segments ahead of camera"""
-        while self.next_x < camera_x + SCREEN_WIDTH * 2:
-            if self.generate_segment(camera_x) == False:
-                break  # No available segment, stop generating
+        """Generate new ground ahead of camera"""
+        if camera_x > self.furthest_x:
+            self.furthest_x = camera_x
+        while self.next_x < camera_x + SCREEN_WIDTH:
+            if not self.generate_segment():
+                break  # No free piece, try again next frame
 
     def get_ground_y_at(self, x):
         """Get ground Y position at x coordinate"""
         return self._get_terrain_height(x)
 
-    def get_angle_at(self, x):
-        """Get ground angle at x coordinate"""
-        return self._get_terrain_angle(x)
+    def get_slope_at(self, x):
+        """Ground steepness at x (dy/dx, positive = downhill)"""
+        return (self._get_terrain_height(x + 1) - self._get_terrain_height(x - 1)) / 2
 
     def reset(self):
         """Reset terrain for new game"""
-        self.seed = urandom.getrandbits(16)
+        self._new_hill_shape()
         self.next_x = -SCREEN_WIDTH
-        self.difficulty = 1.0
+        self.furthest_x = 0
 
         for i in range(TERRAIN_POOL_SIZE):
-            self.segments[i].position = Vector2(-9999, -9999)
-            self.segment_data[i] = {'x': -9999, 'y': 0, 'active': False}
+            self.strips[i][0].position = Vector2(-9999, -9999)
+            self.columns[i].position = Vector2(-9999, -9999)
+            self.piece_end[i] = -9999
 
         # Generate initial terrain
-        for _ in range(12):
-            self.generate_segment(0)
+        self.update(0)
 
 
 # === Car Class ===
@@ -244,6 +258,7 @@ class Car:
         self.wheel_rotation = 0
         self.target_rotation = 0
         self.grounded = False
+        self.air_frames = 0
         self.fuel = MAX_FUEL
         self.distance = 0
         self.max_distance = 0
@@ -262,19 +277,23 @@ class Car:
         self.visual.position.y = y
         self.visual.rotation = self.rotation
 
-        # Windshield (offset from body center)
-        self.windshield.position.x = x + 4 * math.cos(self.rotation) - (-4) * math.sin(self.rotation)
-        self.windshield.position.y = y + 4 * math.sin(self.rotation) + (-4) * math.cos(self.rotation)
+        # Offsets are rotated the same way the engine rotates the body
+        # (positive rotation = counter-clockwise on screen, so the nose lifts uphill)
+        c = math.cos(self.rotation)
+        s = math.sin(self.rotation)
+
+        # Windshield at (4, -4) relative to body
+        self.windshield.position.x = x + 4 * c + (-4) * s
+        self.windshield.position.y = y - 4 * s + (-4) * c
         self.windshield.rotation = self.rotation
 
-        # Wheels (offset from body center)
         # Front wheel at (7, 6) relative to body
-        self.front_wheel.position.x = x + 7 * math.cos(self.rotation) - 6 * math.sin(self.rotation)
-        self.front_wheel.position.y = y + 7 * math.sin(self.rotation) + 6 * math.cos(self.rotation)
+        self.front_wheel.position.x = x + 7 * c + 6 * s
+        self.front_wheel.position.y = y - 7 * s + 6 * c
 
         # Rear wheel at (-7, 6) relative to body
-        self.rear_wheel.position.x = x + (-7) * math.cos(self.rotation) - 6 * math.sin(self.rotation)
-        self.rear_wheel.position.y = y + (-7) * math.sin(self.rotation) + 6 * math.cos(self.rotation)
+        self.rear_wheel.position.x = x + (-7) * c + 6 * s
+        self.rear_wheel.position.y = y - (-7) * s + 6 * c
 
         # Wheel hubs (same position as wheels with slight animation)
         hub_offset_x = 2 * math.cos(self.wheel_rotation) * 0.3
@@ -289,29 +308,39 @@ class Car:
         if not self.alive:
             return False
 
-        # Check if on ground
-        ground_y = terrain.get_ground_y_at(self.x)
-        car_bottom = self.y + CAR_HEIGHT / 2 + WHEEL_RADIUS
 
-        self.grounded = car_bottom >= ground_y - 5
-
-        # Apply gravity when not grounded
-        if not self.grounded:
-            self.vel_y += GRAVITY_Y
-        else:
-            # On ground - reset vertical velocity and snap to terrain
-            self.vel_y = 0
-            terrain_angle = terrain.get_angle_at(self.x)
-            self.target_rotation = terrain_angle
-            # Keep car on ground
-            target_y = ground_y - CAR_HEIGHT / 2 - WHEEL_RADIUS
-            self.y = min(self.y, target_y + 2)
-            # Apply ground friction
-            self.vel_x *= 0.98
-
-        # Apply velocity to position
+        # Move, with gravity always pulling down
+        self.vel_y += GRAVITY_Y
         self.x += self.vel_x
         self.y += self.vel_y
+
+        ground_y = terrain.get_ground_y_at(self.x)
+        target_y = ground_y - CAR_HEIGHT / 2 - WHEEL_RADIUS
+
+        if self.y >= target_y:
+            slope = terrain.get_slope_at(self.x)
+            terrain_angle = -math.atan(slope)
+
+            # Landing upside down or nose-first after a jump wrecks the car
+            if self.air_frames > AIR_GRACE and abs(self.rotation - terrain_angle) > LANDING_MAX_ANGLE:
+                self.alive = False
+                return False
+
+            self.grounded = True
+            self.air_frames = 0
+            self.y = target_y
+            # Move along the ground; going over a crest fast launches the car
+            self.vel_y = slope * self.vel_x
+            self.target_rotation = terrain_angle
+            # Uphill slows the car, downhill speeds it up
+            self.vel_x += GRAVITY_Y * SLOPE_PULL * slope / math.sqrt(1 + slope * slope)
+            # Rolling friction
+            self.vel_x *= 0.99
+            self.vel_x = max(-MAX_VELOCITY * 1.3, min(MAX_VELOCITY * 1.3, self.vel_x))
+        else:
+            self.air_frames += 1
+            # Tiny hops over bumps still count as on the ground
+            self.grounded = self.air_frames <= AIR_GRACE
 
         # Smooth rotation
         rot_diff = self.target_rotation - self.rotation
@@ -333,10 +362,6 @@ class Car:
             self.alive = False
             return False
 
-        if self.y > 100:  # Fell off screen
-            self.alive = False
-            return False
-
         # Check for out of fuel
         if self.fuel <= 0:
             self.alive = False
@@ -352,26 +377,13 @@ class Car:
         # Consume fuel
         self.fuel -= FUEL_CONSUMPTION
 
-        # Calculate force direction based on car rotation
-        angle = self.rotation
+        # Push along the ground (the ground sets vertical speed)
         force = MOTOR_POWER if forward else -MOTOR_POWER
+        self.vel_x += force * math.cos(self.rotation)
 
-        # Apply force in direction car is facing
-        fx = force * math.cos(angle)
-        fy = force * math.sin(angle)
-
-        new_vx = self.vel_x + fx
-        new_vy = self.vel_y + fy
-
-        # Cap velocity
-        speed = math.sqrt(new_vx * new_vx + new_vy * new_vy)
-        if speed > MAX_VELOCITY:
-            scale = MAX_VELOCITY / speed
-            new_vx *= scale
-            new_vy *= scale
-
-        self.vel_x = new_vx
-        self.vel_y = new_vy
+        # Motor can't push past top speed (hills can still speed you up a bit)
+        if abs(self.vel_x) > MAX_VELOCITY and (self.vel_x > 0) == forward:
+            self.vel_x -= force * math.cos(self.rotation)
 
     def brake(self):
         """Apply braking force"""
@@ -393,6 +405,7 @@ class Car:
         self.target_rotation = 0
         self.wheel_rotation = 0
         self.grounded = True  # Start grounded since we're on the terrain
+        self.air_frames = 0
         self.fuel = MAX_FUEL
         self.distance = 0
         self.max_distance = 0
@@ -445,9 +458,10 @@ class Sky:
             layer.opacity = 0.6
             self.layers.append(layer)
 
-    def update(self, camera_x):
-        for layer in self.layers:
+    def update(self, camera_x, camera_y):
+        for i, layer in enumerate(self.layers):
             layer.position.x = camera_x
+            layer.position.y = camera_y - 64 + i * 40
 
 
 # === Fuel Canister ===
@@ -474,7 +488,7 @@ class FuelCanister:
 
     def spawn(self, x, y):
         self.x = x
-        self.body.position = Vector2(x, y - 15)
+        self.body.position = Vector2(x, y - 8)
         self.active = True
         self.body.opacity = 1.0
         self.cap.opacity = 1.0
@@ -729,7 +743,7 @@ while True:
             input_cooldown -= 1
 
         # Update sky background
-        sky.update(camera.position.x)
+        sky.update(camera.position.x, camera.position.y)
 
         if state == STATE_TITLE:
             if input_cooldown == 0 and engine_io.A.is_just_pressed:
@@ -774,10 +788,7 @@ while True:
             target_x = car.x + 20
             target_y = car.y - 10
             camera.position.x += (target_x - camera.position.x) * 0.1
-            camera.position.y += (target_y - camera.position.y) * 0.05
-
-            # Clamp camera Y
-            camera.position.y = max(-30, min(20, camera.position.y))
+            camera.position.y += (target_y - camera.position.y) * 0.08
 
             # Update terrain
             terrain.update(camera.position.x)
@@ -786,10 +797,13 @@ while True:
             for fc in fuel_canisters:
                 if fc.check_collect(car.x, car.y):
                     car.add_fuel(25)
+                elif fc.active and fc.x < car.x - 150:
+                    fc.hide()  # Missed it, free it up for a new one ahead
 
             # Spawn new fuel canisters periodically
             current_dist = int(car.x)
-            if current_dist - last_fuel_distance > FUEL_BONUS_DISTANCE:
+            fuel_spacing = min(FUEL_SPACING_MAX, FUEL_SPACING_START + current_dist * FUEL_SPACING_GROWTH)
+            if current_dist - last_fuel_distance > fuel_spacing:
                 spawn_fuel_canister(current_dist + 100 + urandom.getrandbits(6))
                 last_fuel_distance = current_dist
 
