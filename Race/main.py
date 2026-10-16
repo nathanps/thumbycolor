@@ -7,6 +7,8 @@ import engine_draw
 import engine_save
 import urandom
 
+engine.fps_limit(60)
+
 # Constants
 NUM_RACERS = 3
 STARTING_MONEY = 100

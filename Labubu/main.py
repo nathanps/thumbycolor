@@ -9,6 +9,8 @@ from engine_math import Vector2
 import urandom
 import time
 
+engine.fps_limit(60)
+
 # Constants
 STATE_PACKAGE = 0
 STATE_REVEAL = 1

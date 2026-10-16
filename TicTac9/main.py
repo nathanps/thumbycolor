@@ -5,6 +5,8 @@ import engine_io
 from engine_nodes import Rectangle2DNode, Text2DNode, CameraNode, Circle2DNode
 from engine_math import Vector2
 
+engine.fps_limit(60)
+
 # === Constants ===
 EMPTY = 0
 PLAYER_X = 1
