@@ -60,10 +60,13 @@ A multiplication times tables learning game for kids.
 A Scorched Earth style artillery game for 2-4 players.
 - Turn-based tank battles on a 256px wide battlefield that scrolls (minimap in the HUD)
 - Destructible terrain: craters with scorched rims, loose dirt and tanks fall, fall damage
-- Weapons: Baby Missile, Missile, Big Bomb, MIRV, Dirt Bomb, Roller
+- Weapons: Baby Missile, Missile, Big Bomb, MIRV, Funky Bomb, Roller, Dirt Bomb, Tracer
+- Items: parachutes (no fall damage), shields (soak up damage), fuel for driving
+- Shop before each round: earn money for damage, kills and wins, then spend it
 - Wind, six landscape themes, and three landscape styles
 - Hotseat play; any seat can be a CPU (Easy / Medium / Hard) that zeroes in on its target
-- Rounds with wins and money; sudden death breaks stalemates
+- Aim Help option shows the start of each shot's path for younger players
+- Sudden death breaks stalemates
 - Controls: Left/Right angle, Up/Down power, A fire, B tap weapon, hold B + Left/Right look around, LB/RB drive, MENU pause
 
 ## Installation

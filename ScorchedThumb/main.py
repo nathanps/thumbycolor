@@ -68,6 +68,7 @@ ITEMS = (
 )
 START_ITEMS = (0, 0, 30)
 SHIELD_HP = const(60)
+MAX_DEBRIS = const(80)
 
 START_MONEY = const(5000)
 MONEY_PER_HP = const(30)
@@ -681,6 +682,7 @@ class Game:
         self.blasts = []
         self.dying = []             # Tanks waiting to blow up
         self.popups = []            # Floating damage numbers: [x, y, text, frames]
+        self.debris = []            # Flying bits from explosions: [x, y, vx, vy, frames, color]
         self.trail = []             # Packed points of this turn's shot paths
         self.trail_color = C_WHITE
         self.dx0 = W                # Columns where dirt may need to fall
@@ -789,8 +791,37 @@ def hurt(p, amount, owner, blast=True):
             owner.money += KILL_BONUS
 
 
+def throw_debris(x, y, r, dirt):
+    colors = DIRT_COLORS if dirt else FIRE_COLORS
+    for _ in range(min(12, r + 2)):
+        if len(G.debris) >= MAX_DEBRIS:
+            break
+        a = random.uniform(0.2, math.pi - 0.2)
+        sp = random.uniform(0.6, 1.4 + r * 0.06)
+        G.debris.append([x, y, math.cos(a) * sp, -math.sin(a) * sp,
+                         random.randint(20, 45), colors[random.randrange(1, 5)]])
+
+
+def update_debris():
+    keep = []
+    for d in G.debris:
+        d[3] += 0.08
+        d[0] += d[2]
+        d[1] += d[3]
+        d[4] -= 1
+        ix = int(d[0])
+        iy = int(d[1])
+        if d[4] <= 0 or ix < 0 or ix >= W or iy >= BEDROCK:
+            continue
+        if iy >= 0 and terrain[iy * W + ix] and d[3] > 0:
+            continue                # Landed
+        keep.append(d)
+    G.debris = keep
+
+
 def boom(x, y, r, dmg, owner, dirt):
     G.blasts.append(Blast(x, y, r, dirt))
+    throw_debris(x, y, r, dirt)
     blast_terrain(x, y, r, 1 if dirt else 0)
     if x - r - 3 < G.dx0:
         G.dx0 = x - r - 3
@@ -1085,6 +1116,7 @@ def next_round():
     G.blasts = []
     G.dying = []
     G.popups = []
+    G.debris = []
     G.trail = []
     G.dx0 = W
     G.dx1 = -1
@@ -1256,6 +1288,8 @@ def update_play():
     for b in G.blasts:
         b.t += 1
     G.blasts = [b for b in G.blasts if b.t < b.dur]
+    if G.debris:
+        update_debris()
 
     st = G.state
     if st == ST_TURN:
@@ -1449,6 +1483,9 @@ def draw_scene(fb):
                 # Up off the top of the view: show where it is
                 fb.pixel(sx, HUD_H + 1, C_WHITE)
                 fb.hline(sx - 1, HUD_H + 2, 3, C_WHITE)
+
+    for d in G.debris:
+        fb.pixel(int(d[0]) - cam, int(d[1]) - oy, d[5])
 
     for b in G.blasts:
         b.draw(fb, cam, oy)
