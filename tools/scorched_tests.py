@@ -365,14 +365,15 @@ def practice():
     return ok
 
 
-if which in ("all", "practice"):
-    practice()
-if which in ("all", "edge"):
-    edge_shot()
-if which in ("all", "scripted"):
-    scripted()
-if which in ("all", "soak"):
-    n = int(sys.argv[2]) if len(sys.argv) > 2 else 5
-    fr = int(sys.argv[3]) if len(sys.argv) > 3 else 25000
-    for sd in range(1, n + 1):
-        soak(sd, fr)
+if __name__ == "__main__":
+    if which in ("all", "practice"):
+        practice()
+    if which in ("all", "edge"):
+        edge_shot()
+    if which in ("all", "scripted"):
+        scripted()
+    if which in ("all", "soak"):
+        n = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+        fr = int(sys.argv[3]) if len(sys.argv) > 3 else 25000
+        for sd in range(1, n + 1):
+            soak(sd, fr)
