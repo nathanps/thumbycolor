@@ -109,6 +109,7 @@ ST_SETTLE = const(6)    # Loose dirt and tanks falling
 ST_ROUND_END = const(7)
 ST_GAME_END = const(8)
 ST_SHOP = const(9)
+ST_HOF = const(10)      # Hall of fame screen
 
 
 def rgb(r, g, b):
@@ -585,6 +586,7 @@ class Player:
     def __init__(self, slot, name, ctype):
         self.slot = slot
         self.name = name
+        self.name_i = 0             # Index into NAMES, for the hall of fame
         self.ctype = ctype          # 0 human, 1-3 CPU easy/medium/hard
         self.color = PLAYER_COLORS[slot]
         self.wins = 0
@@ -737,6 +739,7 @@ class Game:
         self.shop_top = 0           # First shop row on screen
         self.shop_queue = []        # Human players still to shop
         self.shop_msg = 0           # Frames to show "not enough money"
+        self.menu = 0               # Title menu choice
 
 
 G = Game()
@@ -763,6 +766,34 @@ def load_settings():
     for i in range(4):
         settings["names"][i] %= len(NAMES)
         settings["types"][i] %= len(TYPE_LABELS)
+
+
+# Hall of fame: games and rounds won by human players, by name
+hof_games = [0] * len(NAMES)
+hof_rounds = [0] * len(NAMES)
+
+
+def load_hof():
+    for i in range(len(NAMES)):
+        try:
+            hof_games[i] = int(engine_save.load("hg" + str(i), 0))
+            hof_rounds[i] = int(engine_save.load("hr" + str(i), 0))
+        except Exception:
+            pass
+
+
+def save_hof(i):
+    try:
+        engine_save.save("hg" + str(i), hof_games[i])
+        engine_save.save("hr" + str(i), hof_rounds[i])
+    except Exception:
+        pass
+
+
+def hof_ranking():
+    """Names with any wins, best first."""
+    ids = [i for i in range(len(NAMES)) if hof_games[i] or hof_rounds[i]]
+    return sorted(ids, key=lambda i: (-hof_games[i], -hof_rounds[i]))
 
 
 def save_settings():
@@ -1222,7 +1253,9 @@ def update_cpu(p):
 def start_game():
     G.players = []
     for i in range(settings["n"]):
-        G.players.append(Player(i, NAMES[settings["names"][i]], settings["types"][i]))
+        p = Player(i, NAMES[settings["names"][i]], settings["types"][i])
+        p.name_i = settings["names"][i]
+        G.players.append(p)
     G.rounds = ROUND_OPTS[settings["r"]]
     G.round_no = 0
     open_shop()
@@ -1298,6 +1331,9 @@ def round_end(winner):
     if winner is not None:
         winner.wins += 1
         winner.money += ROUND_BONUS
+        if not winner.is_cpu():
+            hof_rounds[winner.name_i] += 1
+            save_hof(winner.name_i)
 
 
 def clamp_cam():
@@ -1740,19 +1776,89 @@ def draw_game_end(fb):
 # ---------------------------------------------------------------------------
 # Title and setup screens
 # ---------------------------------------------------------------------------
+MENU = ("BATTLE", "HALL OF FAME")
+
+
 def update_title(fb):
     G.timer += 1
     G.cam = 64 + 60 * math.sin(G.timer / 160)
     render_world(int(G.cam), 0)
     big_center(fb, "SCORCHED", 18, C_ORANGE, C_BLACK, 4)
     big_center(fb, "THUMB", 44, C_GOLD, C_BLACK, 4)
-    if (G.timer // 20) & 1:
-        text_center(fb, "PRESS A", 96, C_WHITE)
+
+    n = len(MENU)
+    if engine_io.UP.is_just_pressed:
+        G.menu = (G.menu - 1) % n
+        sound.blip(520, 2)
+    if engine_io.DOWN.is_just_pressed:
+        G.menu = (G.menu + 1) % n
+        sound.blip(520, 2)
+    for i in range(n):
+        y = 76 + i * 12
+        s = MENU[i]
+        if i == G.menu:
+            text_center(fb, s, y, C_GOLD)
+            if (G.timer // 15) & 1:
+                x = (SW - len(s) * 8) // 2
+                fb.text(">", x - 10, y, C_GOLD)
+                fb.text("<", x + len(s) * 8 + 2, y, C_GOLD)
+        else:
+            text_center(fb, s, y, C_WHITE)
+
+    top = hof_ranking()
+    if top:
+        i = top[0]
+        tiny_center("CHAMP: " + NAMES[i] + " - " + str(hof_games[i]) +
+                    (" GAME" if hof_games[i] == 1 else " GAMES"), 108, C_GOLD)
     tiny_center("A SCORCHED EARTH TRIBUTE", 120, C_WHITE)
+
     if engine_io.A.is_just_pressed:
-        G.state = ST_SETUP
-        G.sel = 0
         sound.blip(660, 3)
+        G.timer = 0
+        if MENU[G.menu] == "BATTLE":
+            G.state = ST_SETUP
+            G.sel = 0
+        else:
+            G.state = ST_HOF
+
+
+def draw_trophy(fb, x, y, color):
+    fb.fill_rect(x, y, 5, 2, color)
+    fb.fill_rect(x + 1, y + 2, 3, 1, color)
+    fb.pixel(x + 2, y + 3, color)
+    fb.fill_rect(x + 1, y + 4, 3, 1, color)
+
+
+def update_hof(fb):
+    G.timer += 1
+    if G.timer > 5 and (engine_io.A.is_just_pressed or engine_io.B.is_just_pressed):
+        G.state = ST_TITLE
+        G.timer = 0
+        sound.blip(520, 2)
+        return
+    fb.fill(C_SETUP_BG)
+    text_center(fb, "HALL OF FAME", 3, C_GOLD)
+    ranks = hof_ranking()
+    if not ranks:
+        text_center(fb, "NO WINNERS", 44, C_WHITE)
+        text_center(fb, "YET!", 56, C_WHITE)
+        tiny_center("WIN A BATTLE TO GET IN HERE", 76, C_GREY)
+    else:
+        tiny("NAME", 16, 16, C_GREY)
+        tiny("GAMES", 70, 16, C_GREY)
+        tiny("ROUNDS", 100, 16, C_GREY)
+        for k, i in enumerate(ranks[:9]):
+            y = 26 + k * 10
+            if k == 0:
+                draw_trophy(fb, 4, y, C_GOLD)
+            else:
+                tiny(str(k + 1), 5, y, C_GREY)
+            tiny(NAMES[i], 16, y, C_GOLD if k == 0 else C_WHITE)
+            gs = str(hof_games[i])
+            tiny(gs, 89 - len(gs) * 4, y, C_WHITE)
+            rs = str(hof_rounds[i])
+            tiny(rs, 124 - len(rs) * 4, y, C_WHITE)
+    tiny_center("B: BACK", 119, C_GREY)
 
 
 SETUP_P0 = const(3)      # Setup row of the first player
@@ -2000,6 +2106,9 @@ def tick():
     if st == ST_SHOP:
         update_shop(fb)
         return
+    if st == ST_HOF:
+        update_hof(fb)
+        return
 
     if G.paused:
         if engine_io.A.is_just_pressed or engine_io.MENU.is_just_pressed:
@@ -2030,6 +2139,11 @@ def tick():
             if G.round_no >= G.rounds:
                 G.state = ST_GAME_END
                 G.timer = 0
+                best = max(q.wins for q in G.players)
+                champs = [q for q in G.players if q.wins == best]
+                if len(champs) == 1 and not champs[0].is_cpu():
+                    hof_games[champs[0].name_i] += 1
+                    save_hof(champs[0].name_i)
             else:
                 open_shop()
         return
@@ -2050,6 +2164,7 @@ def tick():
 
 
 load_settings()
+load_hof()
 new_landscape([])
 engine.fps_limit(60)
 

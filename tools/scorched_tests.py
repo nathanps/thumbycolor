@@ -48,6 +48,17 @@ def scripted():
                 pressed.add("A")
                 st["phase"] = "play"
                 st["t"] = 0
+        elif ph == "hof":
+            # Back on the title: open the hall of fame
+            if st["t"] == 20:
+                snaps.append("14_title_menu")
+            if st["t"] == 25:
+                pressed.add("DOWN")
+            if st["t"] == 30:
+                pressed.add("A")
+            if st["t"] == 40:
+                snaps.append("15_hall_of_fame")
+                st["phase"] = "done"
         elif ph == "play":
             s = G.state
             if s != st["last_state"]:
@@ -106,7 +117,8 @@ def scripted():
                     name = "10_game_end"
                 if st["state_t"] == 45:
                     pressed.add("A")
-                    st["phase"] = "done"
+                    st["phase"] = "hof"
+                    st["t"] = 0
             if s == 9:
                 # Shop: buy a missile and a big bomb, then leave
                 t = st["state_t"] % 40
