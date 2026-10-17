@@ -1,7 +1,7 @@
 """Drive Scorched Thumb headlessly on desktop Python: a scripted human game that saves
 screenshots to tools/out, then CPU-only soak games that catch crashes and stuck states.
 
-Usage: python scorched_tests.py [all|edge|scripted|soak] [soak_games] [frames_per_game]
+Usage: python scorched_tests.py [all|practice|edge|scripted|soak] [soak_games] [frames_per_game]
 """
 import os
 import sys
@@ -52,8 +52,8 @@ def scripted():
             # Back on the title: open the hall of fame
             if st["t"] == 20:
                 snaps.append("14_title_menu")
-            if st["t"] == 25:
-                pressed.add("DOWN")
+            if st["t"] in (24, 27):
+                pressed.add("DOWN")      # Past Target Practice to Hall of Fame
             if st["t"] == 30:
                 pressed.add("A")
             if st["t"] == 40:
@@ -254,6 +254,119 @@ def edge_shot():
     return ok
 
 
+def practice_aim(g, G, p, t):
+    """Search angle and power so a shot passes through (balloon) or lands on (ground) target t."""
+    import math
+    W, H, terrain = g["W"], g["H"], g["terrain"]
+    ax = G.wind * g["WIND_K"] / 4
+    ay = g["GRAVITY"] / 4
+    tx, ty = t.x, t.cy
+
+    def score(ang, pw):
+        a = math.radians(ang)
+        sp = pw * g["V_MAX"] / 1000
+        x, y = p.barrel_tip(ang, 7)
+        vx, vy = math.cos(a) * sp, -math.sin(a) * sp
+        best = 1e9
+        for _ in range(2400):
+            vx += ax
+            vy += ay
+            x += vx / 4
+            y += vy / 4
+            if t.kind == 0:
+                d = (x - tx) ** 2 + (y - ty) ** 2
+                if d < best:
+                    best = d
+            if x < 0 or x >= W:
+                return best if t.kind == 0 else 1e9
+            iy = int(y)
+            if y >= 0 and (iy >= 126 or terrain[iy * W + int(x)]):
+                if t.kind == 1:
+                    return (x - tx) ** 2 + (y - ty) ** 2
+                return best
+        return best
+
+    best = (1e18, 45, 500)
+    for ang in range(15, 88, 3):
+        for pw in range(100, 1001, 15):
+            sc = score(ang, pw)
+            if sc < best[0]:
+                best = (sc, ang, pw)
+    _, a0, p0 = best
+    for ang in range(a0 - 3, a0 + 4):
+        for pw in range(p0 - 15, p0 + 16, 3):
+            sc = score(ang, pw)
+            if sc < best[0]:
+                best = (sc, ang, pw)
+    return best[1], best[2]
+
+
+def practice():
+    """Play the first few target practice levels with an aim solver."""
+    st = {"phase": "title", "t": 0, "seen": set(), "levels_done": 0, "last": None, "since": 0}
+
+    def driver(frame, g):
+        G = g.get("G")
+        pressed = set()
+        snaps = []
+        if G is None:
+            return pressed, snaps
+        s = G.state
+        if s != st["last"]:
+            st["last"] = s
+            st["since"] = 0
+        st["since"] += 1
+        t = st["since"]
+        if s == 0:
+            if t == 10:
+                pressed.add("DOWN")
+            if t == 15:
+                snaps.append("16_title_practice")
+            if t == 20:
+                pressed.add("A")
+        elif s == 11:
+            if t == 15 and "sel" not in st["seen"]:
+                st["seen"].add("sel")
+                snaps.append("17_level_select")
+            if t == 20:
+                if st["levels_done"] >= 4:
+                    snaps.append("21_level_select_after")
+                    st["phase"] = "done"
+                else:
+                    pressed.add("A")
+        elif s == 2:
+            if t == 20 and "banner" not in st["seen"]:
+                st["seen"].add("banner")
+                snaps.append("18_practice_banner")
+        elif s == 3:
+            if t == 6:
+                p = G.players[0]
+                live = [q for q in G.targets if q.alive]
+                live.sort(key=lambda q: abs(q.x - p.x))
+                p.angle, p.power = practice_aim(g, G, p, live[0])
+                if "aim" not in st["seen"]:
+                    st["seen"].add("aim")
+                    snaps.append("19_practice_aim")
+            if t == 8:
+                pressed.add("A")
+        elif s == 12:
+            if t == 40:
+                snaps.append("20_level_done_%d" % (G.tp_level + 1))
+            if t == 45:
+                st["levels_done"] += 1
+                pressed.add("A" if st["levels_done"] < 4 else "B")
+        return pressed, snaps
+
+    thumbysim.SAVE.clear()
+    thumbysim.run_game(GAME, driver, 9000, OUT)
+    stars = [thumbysim.SAVE.get("tp%d" % i, 0) for i in range(12)]
+    ok = st["phase"] == "done" and all(v > 0 for v in stars[:4])
+    print("practice: levels finished=%d stars=%s ok=%s" % (st["levels_done"], stars, ok))
+    return ok
+
+
+if which in ("all", "practice"):
+    practice()
 if which in ("all", "edge"):
     edge_shot()
 if which in ("all", "scripted"):

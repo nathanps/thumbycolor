@@ -110,6 +110,29 @@ ST_ROUND_END = const(7)
 ST_GAME_END = const(8)
 ST_SHOP = const(9)
 ST_HOF = const(10)      # Hall of fame screen
+ST_TP_SELECT = const(11)    # Target practice level select
+ST_TP_DONE = const(12)      # Target practice level finished
+
+MODE_BATTLE = const(0)
+MODE_PRACTICE = const(1)
+
+# Target practice levels: (seed, landscape style, targets, how many are ground
+# targets rather than balloons, wind, balloons bob up and down)
+TP_LEVELS = (
+    (101, 2, 3, 0, 0, 0),
+    (202, 0, 3, 1, 0, 0),
+    (303, 0, 4, 1, 2, 0),
+    (404, 1, 4, 2, -3, 0),
+    (505, 2, 4, 0, 5, 1),
+    (606, 0, 5, 2, -5, 0),
+    (707, 1, 5, 1, 6, 1),
+    (808, 0, 5, 3, -7, 1),
+    (909, 1, 6, 2, 8, 1),
+    (1010, 2, 6, 3, -10, 1),
+    (1111, 1, 6, 2, 11, 1),
+    (1212, 0, 7, 3, -12, 1),
+)
+TP_X0 = const(16)       # Where the practice tank sits
 
 
 def rgb(r, g, b):
@@ -140,6 +163,11 @@ C_ORANGE = rgb(255, 120, 30)
 C_SEL = rgb(40, 50, 110)
 C_SETUP_BG = rgb(10, 12, 30)
 C_SHIELD = rgb(120, 230, 255)
+C_POST = rgb(120, 85, 50)
+C_LOCKED = rgb(24, 26, 40)
+BALLOON_COLORS = (rgb(255, 60, 90), rgb(255, 220, 40), rgb(80, 200, 255),
+                  rgb(200, 90, 255), rgb(90, 230, 110))
+STAR = ("0001000", "0001000", "1111111", "0111110", "0011100", "0110110", "0100010")
 C_RED = rgb(240, 70, 60)
 
 PLAYER_COLORS = (rgb(255, 70, 60), rgb(70, 160, 255),
@@ -173,6 +201,7 @@ trail_x = array.array("H", [0] * MAX_TRAIL)   # Shot path points, x + 8
 trail_y = array.array("H", [0] * MAX_TRAIL)   # and y + 512, so they stay positive
 
 _seed = random.getrandbits(30)
+ENTROPY = random.getrandbits(30)    # To get back to unpredictable after seeding a level
 for _i in range(4):
     rng[_i] = (_seed >> (8 * _i)) & 0xFF
 
@@ -456,8 +485,10 @@ STYLES = (
 )
 
 
-def gen_heights():
-    style = STYLES[random.randrange(len(STYLES))]
+def gen_heights(style_i=-1):
+    if style_i < 0:
+        style_i = random.randrange(len(STYLES))
+    style = STYLES[style_i]
     base = random.randint(72, 96)
     waves = []
     for amp, lo, hi in style:
@@ -740,6 +771,14 @@ class Game:
         self.shop_queue = []        # Human players still to shop
         self.shop_msg = 0           # Frames to show "not enough money"
         self.menu = 0               # Title menu choice
+        self.mode = MODE_BATTLE
+        self.targets = []           # Target practice balloons and ground targets
+        self.tp_level = 0
+        self.tp_sel = 0
+        self.tp_shots = 0
+        self.tp_limit = 0
+        self.tp_win = False
+        self.tp_got = 0             # Stars earned on the level just finished
 
 
 G = Game()
@@ -786,6 +825,24 @@ def save_hof(i):
     try:
         engine_save.save("hg" + str(i), hof_games[i])
         engine_save.save("hr" + str(i), hof_rounds[i])
+    except Exception:
+        pass
+
+
+tp_stars = [0] * len(TP_LEVELS)
+
+
+def load_stars():
+    for i in range(len(TP_LEVELS)):
+        try:
+            tp_stars[i] = int(engine_save.load("tp" + str(i), 0))
+        except Exception:
+            pass
+
+
+def save_stars(i):
+    try:
+        engine_save.save("tp" + str(i), tp_stars[i])
     except Exception:
         pass
 
@@ -907,6 +964,8 @@ def boom(x, y, r, dmg, owner, dirt):
     G.shake = max(G.shake, min(10, r // 2 + 2))
     sound.explode()
     reach = r + 4
+    if G.targets:
+        blast_targets(x, y, reach)
     for p in G.players:
         if p.alive:
             dx = p.x - x
@@ -914,6 +973,64 @@ def boom(x, y, r, dmg, owner, dirt):
             d = math.sqrt(dx * dx + dy * dy)
             if d < reach:
                 hurt(p, int(dmg * (reach - d) / reach + 0.5), owner)
+
+
+class Target:
+    def __init__(self, x, y, kind):
+        self.x = x
+        self.y = y                  # Balloon: middle height. Ground target: row it stands on
+        self.kind = kind            # 0 balloon, 1 ground target
+        self.cy = y if kind == 0 else y - 5     # Centre right now
+        self.bob = 0
+        self.phase = 0.0
+        self.alive = True
+
+
+def hit_target(t):
+    t.alive = False
+    popup(t.x, t.cy - 8, "POP!" if t.kind == 0 else "HIT!", C_GOLD)
+    throw_debris(t.x, t.cy, 5, False)
+    sound.blip(1500, 4)
+
+
+def shot_hits_targets(ix, iy):
+    """Pop any balloon the shot passes through. True if it struck a ground target."""
+    for t in G.targets:
+        if not t.alive:
+            continue
+        dx = ix - t.x
+        dy = iy - t.cy
+        if t.kind == 0:
+            if dx * dx + dy * dy <= 16:
+                hit_target(t)
+        elif -3 <= dx <= 3 and -3 <= dy <= 5:
+            return True
+    return False
+
+
+def blast_targets(x, y, reach):
+    for t in G.targets:
+        if t.alive:
+            dx = t.x - x
+            dy = t.cy - y
+            if dx * dx + dy * dy < reach * reach:
+                hit_target(t)
+
+
+def update_targets():
+    for t in G.targets:
+        if t.alive and t.bob:
+            t.cy = t.y + int(4 * math.sin(G.frame / 25 + t.phase))
+
+
+def target_supported(t):
+    if t.y >= BEDROCK:
+        return True
+    base = t.y * W
+    for c in range(t.x - 2, t.x + 3):
+        if 0 <= c < W and terrain[base + c]:
+            return True
+    return False
 
 
 def hit_tank(ix, iy, s):
@@ -1087,6 +1204,8 @@ def step_shot(s):
             continue
         ix = int(s.x)
         iy = int(s.y + 512) - 512
+        if G.targets and shot_hits_targets(ix, iy):
+            return 1
         if iy >= BEDROCK or (iy >= 0 and terrain[iy * W + ix]):
             if s.kind == K_ROLLER:
                 start_roll(s, ix, iy)
@@ -1130,6 +1249,8 @@ def sim_shot(x: int, y: int, vx: int, vy: int) -> int:
 
 
 def fire(p):
+    if G.mode == MODE_PRACTICE:
+        G.tp_shots += 1
     w = p.wsel
     if p.inv[w] == 0:
         w = 0
@@ -1258,6 +1379,8 @@ def start_game():
         G.players.append(p)
     G.rounds = ROUND_OPTS[settings["r"]]
     G.round_no = 0
+    G.mode = MODE_BATTLE
+    G.targets = []
     open_shop()
 
 
@@ -1297,10 +1420,16 @@ def begin_turn(i):
         p.power = p.max_power()
     if p.inv[p.wsel] == 0:
         p.wsel = 0
+    if G.mode == MODE_PRACTICE and G.turn_count > 0:
+        G.state = ST_AIM            # No banner between practice shots
+        G.b_armed = False
     sound.blip(660, 3)
 
 
 def end_turn():
+    if G.mode == MODE_PRACTICE:
+        practice_turn_over()
+        return
     alive = [p for p in G.players if p.alive]
     if len(alive) <= 1:
         round_end(alive[0] if alive else None)
@@ -1319,6 +1448,110 @@ def end_turn():
             break
     G.turn_count += 1
     begin_turn(i)
+
+
+def start_practice(level):
+    G.mode = MODE_PRACTICE
+    G.tp_level = level
+    seed, style, n, grounded, wind, bob = TP_LEVELS[level]
+
+    # Same landscape and targets every time this level is played
+    random.seed(seed)
+    for i in range(4):
+        rng[i] = (seed >> (8 * i)) & 0xFF
+    build_palette(THEMES[level % len(THEMES)])
+    gen_heights(style)
+    for c in range(TP_X0 - 4, TP_X0 + 5):
+        heights[c] = heights[TP_X0]
+
+    kinds = [1] * grounded + [0] * (n - grounded)
+    for i in range(n - 1, 0, -1):
+        j = random.randrange(i + 1)
+        kinds[i], kinds[j] = kinds[j], kinds[i]
+    targets = []
+    for k in range(n):
+        x = int(60 + (k + 0.5) * 185 / n) + random.randint(-8, 8)
+        if kinds[k]:
+            h = heights[x]
+            for c in range(x - 3, x + 4):
+                heights[c] = h
+            targets.append(Target(x, h, 1))
+        else:
+            y = max(HUD_H + 8, heights[x] - random.randint(16, 44))
+            t = Target(x, y, 0)
+            t.bob = bob
+            t.phase = random.uniform(0, 6.28)
+            targets.append(t)
+    fill_terrain()
+    random.seed(ENTROPY ^ G.frame)
+
+    p = Player(0, NAMES[settings["names"][0]], 0)
+    p.name_i = settings["names"][0]
+    p.inv[7] = 0                    # No tracers: every shot counts
+    p.items = [0, 0, 0]
+    p.x = TP_X0
+    p.y = heights[TP_X0]
+    p.angle = 45
+    G.players = [p]
+    G.targets = targets
+    G.tp_shots = 0
+    G.tp_limit = n * 2 + 3
+    G.wind = wind
+    G.round_no = 1
+    G.rounds = 1
+    G.shots = []
+    G.blasts = []
+    G.dying = []
+    G.popups = []
+    G.debris = []
+    G.fire = []
+    G.trail_n = 0
+    G.dx0 = W
+    G.dx1 = -1
+    G.turn_count = 0
+    G.calm = 0
+    G.sudden = False
+    G.paused = False
+    begin_turn(0)
+    G.cam = p.x - 64.0
+    clamp_cam()
+
+
+def practice_turn_over():
+    p = G.players[0]
+    left = len([t for t in G.targets if t.alive])
+    if left == 0:
+        tp_finish(True)
+    elif not p.alive or G.tp_shots >= G.tp_limit:
+        tp_finish(False)
+    else:
+        G.turn_count += 1
+        begin_turn(0)
+
+
+def tp_finish(win):
+    G.state = ST_TP_DONE
+    G.timer = 0
+    G.tp_win = win
+    sound.whistle_stop()
+    if win:
+        n = len(G.targets)
+        if G.tp_shots <= n:
+            G.tp_got = 3
+        elif G.tp_shots <= n + 2:
+            G.tp_got = 2
+        else:
+            G.tp_got = 1
+        if G.tp_got > tp_stars[G.tp_level]:
+            tp_stars[G.tp_level] = G.tp_got
+            save_stars(G.tp_level)
+        sound.blip(1320, 10)
+    else:
+        sound.blip(160, 12)
+
+
+def tp_unlocked(i):
+    return i == 0 or tp_stars[i - 1] > 0
 
 
 def round_end(winner):
@@ -1451,6 +1684,8 @@ def update_play():
         update_debris()
     if G.fire:
         update_fire()
+    if G.targets:
+        update_targets()
 
     st = G.state
     if st == ST_TURN:
@@ -1525,6 +1760,11 @@ def update_settle():
             G.dx0 = W
             G.dx1 = -1
         moved += m
+    for t in G.targets:
+        if t.alive and t.kind == 1 and not target_supported(t):
+            t.y += 1
+            t.cy = t.y - 5
+            moved += 1
     for p in G.players:
         if not supported(p):
             moved += 1
@@ -1613,6 +1853,35 @@ def draw_aim_help(fb, p, cam, oy):
             fb.pixel(ix - cam, iy - oy, C_WHITE if (f // 3) & 1 else C_BLACK)
 
 
+def draw_targets(fb, cam, oy):
+    for k, t in enumerate(G.targets):
+        if not t.alive:
+            continue
+        sx = t.x - cam
+        if sx < -6 or sx > SW + 6:
+            continue
+        sy = t.cy - oy
+        if t.kind == 0:
+            col = BALLOON_COLORS[k % len(BALLOON_COLORS)]
+            fb.line(sx, sy + 4, sx - 1 + ((G.frame // 20) & 1) * 2, sy + 10, C_GREY)
+            fb.ellipse(sx, sy, 3, 4, col, True)
+            fb.pixel(sx - 1, sy - 2, C_WHITE)
+            fb.pixel(sx, sy + 5, col)
+        else:
+            fb.vline(sx, sy + 3, t.y - oy - sy - 3, C_POST)
+            fb.ellipse(sx, sy, 3, 3, C_RED, True)
+            fb.ellipse(sx, sy, 2, 2, C_WHITE, True)
+            fb.pixel(sx, sy, C_RED)
+
+
+def draw_star(fb, x, y, scale, color):
+    for r in range(7):
+        row = STAR[r]
+        for c in range(7):
+            if row[c] == "1":
+                fb.fill_rect(x + c * scale, y + r * scale, scale, scale, color)
+
+
 def draw_scene(fb):
     cam = int(G.cam + 0.5)
     oy = 0
@@ -1628,6 +1897,8 @@ def draw_scene(fb):
     aiming = G.state in (ST_TURN, ST_AIM)
     for p in G.players:
         draw_tank(fb, p, cam, oy, aiming and p is cur)
+    if G.targets:
+        draw_targets(fb, cam, oy)
 
     if G.state == ST_AIM and cur is not None and not cur.is_cpu() and settings["aim"]:
         draw_aim_help(fb, cur, cam, oy)
@@ -1671,7 +1942,12 @@ def draw_hud(fb, p, cam):
     if p is None:
         return
     tiny(p.name, 1, 1, p.color)
-    tiny("HP" + str(p.hp), 30, 1, C_HP if p.hp > 35 else C_HP_LOW)
+    practice = G.mode == MODE_PRACTICE
+    if practice:
+        tiny("LV" + str(G.tp_level + 1), 30, 1, C_GOLD)
+        tiny("SHOT " + str(G.tp_shots) + "/" + str(G.tp_limit), 48, 1, C_WHITE)
+    else:
+        tiny("HP" + str(p.hp), 30, 1, C_HP if p.hp > 35 else C_HP_LOW)
     fuel = p.items[IT_FUEL]
     if fuel > 0:
         tiny("F" + str(fuel), 54, 1, C_GREY)
@@ -1690,9 +1966,12 @@ def draw_hud(fb, p, cam):
 
     tiny("A" + str(p.angle), 1, 7, C_WHITE)
     tiny("P" + str(p.power), 21, 7, C_WHITE)
-    wpn = WEAPONS[p.wsel]
-    n = p.inv[p.wsel]
-    ws = wpn[0] if n < 0 else wpn[0] + " " + str(n)
+    if practice:
+        ws = "TARGETS LEFT " + str(len([t for t in G.targets if t.alive]))
+    else:
+        wpn = WEAPONS[p.wsel]
+        n = p.inv[p.wsel]
+        ws = wpn[0] if n < 0 else wpn[0] + " " + str(n)
     tiny(ws, SW - len(ws) * 4, 7, C_GOLD)
 
     # Minimap: whole world at half size, with the visible part underlined
@@ -1705,10 +1984,19 @@ def draw_hud(fb, p, cam):
             fb.fill_rect(q.x // 2 - 1, 14, 2, 1, C_DARK)
     for s in G.shots:
         fb.pixel(int(s.x) // 2, 15, C_WHITE)
+    for t in G.targets:
+        if t.alive:
+            fb.pixel(t.x // 2, 14, C_GOLD)
 
 
 def draw_banner(fb):
     p = G.players[G.turn]
+    if G.mode == MODE_PRACTICE:
+        if G.timer < 50 or (G.timer // 6) & 1:
+            text_center(fb, "LEVEL " + str(G.tp_level + 1), 34, C_WHITE)
+            tiny_center("HIT EVERY BALLOON AND TARGET", 47, C_GOLD)
+            tiny_center("YOU HAVE " + str(G.tp_limit) + " SHOTS", 55, C_WHITE)
+        return
     if G.timer < 50 or (G.timer // 6) & 1:
         if G.turn_count == 0:
             # First turn of a round also shows the round number
@@ -1776,7 +2064,7 @@ def draw_game_end(fb):
 # ---------------------------------------------------------------------------
 # Title and setup screens
 # ---------------------------------------------------------------------------
-MENU = ("BATTLE", "HALL OF FAME")
+MENU = ("BATTLE", "TARGET PRACTICE", "HALL OF FAME")
 
 
 def update_title(fb):
@@ -1798,8 +2086,8 @@ def update_title(fb):
         s = MENU[i]
         if i == G.menu:
             text_center(fb, s, y, C_GOLD)
-            if (G.timer // 15) & 1:
-                x = (SW - len(s) * 8) // 2
+            x = (SW - len(s) * 8) // 2
+            if x >= 10 and (G.timer // 15) & 1:
                 fb.text(">", x - 10, y, C_GOLD)
                 fb.text("<", x + len(s) * 8 + 2, y, C_GOLD)
         else:
@@ -1809,7 +2097,7 @@ def update_title(fb):
     if top:
         i = top[0]
         tiny_center("CHAMP: " + NAMES[i] + " - " + str(hof_games[i]) +
-                    (" GAME" if hof_games[i] == 1 else " GAMES"), 108, C_GOLD)
+                    (" GAME" if hof_games[i] == 1 else " GAMES"), 112, C_GOLD)
     tiny_center("A SCORCHED EARTH TRIBUTE", 120, C_WHITE)
 
     if engine_io.A.is_just_pressed:
@@ -1818,6 +2106,8 @@ def update_title(fb):
         if MENU[G.menu] == "BATTLE":
             G.state = ST_SETUP
             G.sel = 0
+        elif MENU[G.menu] == "TARGET PRACTICE":
+            G.state = ST_TP_SELECT
         else:
             G.state = ST_HOF
 
@@ -1858,7 +2148,87 @@ def update_hof(fb):
             tiny(gs, 89 - len(gs) * 4, y, C_WHITE)
             rs = str(hof_rounds[i])
             tiny(rs, 124 - len(rs) * 4, y, C_WHITE)
+    stars = sum(tp_stars)
+    if stars:
+        tiny_center("PRACTICE STARS: " + str(stars) + "/" + str(3 * len(TP_LEVELS)), 110, C_GOLD)
     tiny_center("B: BACK", 119, C_GREY)
+
+
+def update_tp_select(fb):
+    G.timer += 1
+    n = len(TP_LEVELS)
+    sel = G.tp_sel
+    if engine_io.LEFT.is_just_pressed:
+        sel -= 1
+    if engine_io.RIGHT.is_just_pressed:
+        sel += 1
+    if engine_io.UP.is_just_pressed:
+        sel -= 4
+    if engine_io.DOWN.is_just_pressed:
+        sel += 4
+    sel = max(0, min(n - 1, sel))
+    if sel != G.tp_sel:
+        G.tp_sel = sel
+        sound.blip(520, 2)
+    if G.timer > 5:
+        if engine_io.A.is_just_pressed:
+            if tp_unlocked(sel):
+                sound.blip(990, 4)
+                start_practice(sel)
+                return
+            sound.blip(150, 6)
+        elif engine_io.B.is_just_pressed:
+            G.state = ST_TITLE
+            G.timer = 0
+            sound.blip(520, 2)
+            return
+
+    fb.fill(C_SETUP_BG)
+    text_center(fb, "TARGET PRACTICE", 3, C_GOLD)
+    for i in range(n):
+        x = 6 + (i % 4) * 30
+        y = 16 + (i // 4) * 29
+        open_ = tp_unlocked(i)
+        if not open_:
+            fb.fill_rect(x, y, 28, 26, C_LOCKED)
+        elif i == sel:
+            fb.fill_rect(x, y, 28, 26, C_SEL)
+        else:
+            fb.fill_rect(x, y, 28, 26, C_HUD)
+        fb.rect(x, y, 28, 26, C_GOLD if i == sel else C_DARK)
+        num = str(i + 1)
+        fb.text(num, x + 14 - len(num) * 4, y + 4, C_WHITE if open_ else C_DARK)
+        if open_:
+            for k in range(3):
+                draw_star(fb, x + 2 + k * 8, y + 16, 1, C_GOLD if tp_stars[i] > k else C_DARK)
+    tiny_center(NAMES[settings["names"][0]] + "   STARS " + str(sum(tp_stars)) + "/" +
+                str(3 * n), 106, C_WHITE)
+    if tp_unlocked(sel):
+        tiny_center("A: PLAY   B: BACK", 119, C_GREY)
+    else:
+        tiny_center("FINISH LEVEL " + str(sel) + " TO UNLOCK", 119, C_GREY)
+
+
+def draw_tp_done(fb):
+    dim_screen()
+    draw_panel(fb, 10, 30, 108, 70)
+    if G.tp_win:
+        text_center(fb, "LEVEL CLEAR!", 36, C_GOLD)
+        for k in range(3):
+            draw_star(fb, 41 + k * 16, 48, 2, C_GOLD if G.tp_got > k else C_DARK)
+        tiny_center("SHOTS USED: " + str(G.tp_shots), 66, C_WHITE)
+        last = G.tp_level + 1 >= len(TP_LEVELS)
+        msg = "A: PLAY AGAIN" if last else "A: NEXT LEVEL"
+    else:
+        dead = not G.players[0].alive
+        text_center(fb, "OOPS!", 38, C_RED)
+        tiny_center("YOUR TANK BLEW UP" if dead else "OUT OF SHOTS", 52, C_WHITE)
+        left = len([t for t in G.targets if t.alive])
+        tiny_center(str(left) + (" TARGET LEFT" if left == 1 else " TARGETS LEFT"), 62, C_GREY)
+        msg = "A: TRY AGAIN"
+    if G.timer > 30 and (G.frame // 10) & 1:
+        tiny_center(msg, 80, C_WHITE)
+    tiny_center("B: LEVELS", 90, C_GREY)
 
 
 SETUP_P0 = const(3)      # Setup row of the first player
@@ -2109,6 +2479,9 @@ def tick():
     if st == ST_HOF:
         update_hof(fb)
         return
+    if st == ST_TP_SELECT:
+        update_tp_select(fb)
+        return
 
     if G.paused:
         if engine_io.A.is_just_pressed or engine_io.MENU.is_just_pressed:
@@ -2147,6 +2520,23 @@ def tick():
             else:
                 open_shop()
         return
+    if st == ST_TP_DONE:
+        G.timer += 1
+        draw_scene(fb)
+        draw_tp_done(fb)
+        if G.timer > 30:
+            if engine_io.A.is_just_pressed:
+                nxt = G.tp_level + 1
+                if G.tp_win and nxt < len(TP_LEVELS):
+                    G.tp_sel = nxt
+                    start_practice(nxt)
+                else:
+                    start_practice(G.tp_level)
+            elif engine_io.B.is_just_pressed:
+                G.state = ST_TP_SELECT
+                G.tp_sel = G.tp_level
+                G.timer = 0
+        return
     if st == ST_GAME_END:
         G.timer += 1
         draw_scene(fb)
@@ -2165,6 +2555,7 @@ def tick():
 
 load_settings()
 load_hof()
+load_stars()
 new_landscape([])
 engine.fps_limit(60)
 
