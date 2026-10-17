@@ -107,6 +107,19 @@ def scripted():
                 if st["state_t"] == 45:
                     pressed.add("A")
                     st["phase"] = "done"
+            if s == 9:
+                # Shop: buy a missile and a big bomb, then leave
+                t = st["state_t"] % 40
+                if t == 12:
+                    pressed.add("A")
+                elif t == 16:
+                    pressed.add("DOWN")
+                elif t == 20:
+                    pressed.add("A")
+                elif t == 24 and "shop" not in st["seen"]:
+                    st["seen"].add("shop"); name = "13_shop"
+                elif t == 30:
+                    pressed.add("B")
             if any(q.chute for q in G.players) and "chute" not in st["seen"]:
                 st["seen"].add("chute"); name = "11_parachute"
             if len(G.shots) >= 4 and "multi" not in st["seen"] and st["state_t"] > 3:

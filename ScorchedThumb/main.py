@@ -54,7 +54,7 @@ WEAPONS = (
     ("DIRT BOMB", 13, 0, K_DIRT, 2000, 3, "BURIES THINGS IN DIRT"),
     ("TRACER", 0, 0, K_TRACER, 300, 10, "SHOWS THE PATH, NO DAMAGE"),
 )
-START_INV = (-1, 3, 1, 1, 1, 2, 2, 5)    # -1 means unlimited
+START_INV = (-1, 0, 0, 0, 0, 0, 0, 5)    # -1 means unlimited
 FUNKY_BITS = const(6)
 
 # Items: (name, price, bundle size, shop description)
@@ -66,12 +66,20 @@ ITEMS = (
     ("SHIELD", 3000, 2, "SOAKS UP 60 DAMAGE A ROUND"),
     ("FUEL", 500, 25, "DRIVE AROUND WITH LB/RB"),
 )
-START_ITEMS = (1, 1, 40)
+START_ITEMS = (0, 0, 30)
 SHIELD_HP = const(60)
 
+START_MONEY = const(5000)
 MONEY_PER_HP = const(30)
 KILL_BONUS = const(1500)
-ROUND_BONUS = const(2500)
+ROUND_BONUS = const(2500)  # For the winner
+ROUND_PAY = const(1000)    # For everyone, so the losers can buy something too
+
+# What the shop sells: (0, weapon index) or (1, item index)
+STORE = tuple([(0, i) for i in range(1, len(WEAPONS))] + [(1, i) for i in range(len(ITEMS))])
+# What the CPU likes to buy (repeats make it more likely)
+CPU_WISH = ((0, 1), (0, 1), (0, 2), (0, 3), (0, 4), (1, IT_SHIELD), (1, IT_CHUTE))
+SHOP_ROWS = const(9)       # Rows that fit on the shop screen
 
 FALL_SAFE = const(3)    # Pixels a tank can drop without getting hurt
 
@@ -95,6 +103,7 @@ ST_BOOM = const(5)      # Explosions playing out
 ST_SETTLE = const(6)    # Loose dirt and tanks falling
 ST_ROUND_END = const(7)
 ST_GAME_END = const(8)
+ST_SHOP = const(9)
 
 
 def rgb(r, g, b):
@@ -548,7 +557,7 @@ class Player:
         self.ctype = ctype          # 0 human, 1-3 CPU easy/medium/hard
         self.color = PLAYER_COLORS[slot]
         self.wins = 0
-        self.money = 0
+        self.money = START_MONEY
         self.kills = 0
         self.x = 0
         self.y = 0                  # Row of the ground the tank sits on
@@ -583,13 +592,12 @@ class Player:
         self.fall = 0
         self.flash = 0
         self.chute = False
-        self.inv = list(START_INV)
-        self.items = list(START_ITEMS)
         self.shield = 0
         if self.items[IT_SHIELD] > 0:
             self.items[IT_SHIELD] -= 1
             self.shield = SHIELD_HP
-        self.wsel = 0
+        if self.inv[self.wsel] == 0:
+            self.wsel = 0
         self.ai_target = None
         self.ai_streak = 0
 
@@ -690,7 +698,10 @@ class Game:
         self.sudden = False         # Sudden death: full power for everyone to end a stalemate
         self.held = [0] * 4         # Frames LEFT, RIGHT, UP, DOWN have been held
         self.drive_t = 0
-        self.sel = 0                # Setup menu row
+        self.sel = 0                # Setup or shop menu row
+        self.shop_top = 0           # First shop row on screen
+        self.shop_queue = []        # Human players still to shop
+        self.shop_msg = 0           # Frames to show "not enough money"
 
 
 G = Game()
@@ -1059,7 +1070,7 @@ def start_game():
         G.players.append(Player(i, NAMES[settings["names"][i]], settings["types"][i]))
     G.rounds = ROUND_OPTS[settings["r"]]
     G.round_no = 0
-    next_round()
+    open_shop()
 
 
 def next_round():
@@ -1125,6 +1136,8 @@ def round_end(winner):
     G.timer = 0
     G.winner = winner
     sound.whistle_stop()
+    for p in G.players:
+        p.money += ROUND_PAY
     if winner is not None:
         winner.wins += 1
         winner.money += ROUND_BONUS
@@ -1636,6 +1649,136 @@ def update_setup(fb):
 
 
 # ---------------------------------------------------------------------------
+# Shop
+# ---------------------------------------------------------------------------
+def store_info(e):
+    """(name, price, bundle size, description) for a shop entry."""
+    if e[0] == 0:
+        w = WEAPONS[e[1]]
+        return w[0], w[4], w[5], w[6]
+    return ITEMS[e[1]]
+
+
+def store_have(p, e):
+    return p.inv[e[1]] if e[0] == 0 else p.items[e[1]]
+
+
+def store_buy(p, e):
+    name, price, n, desc = store_info(e)
+    if p.money < price:
+        return False
+    p.money -= price
+    if e[0] == 0:
+        p.inv[e[1]] += n
+    else:
+        p.items[e[1]] += n
+    return True
+
+
+def cpu_shop(p):
+    """Spend about 70% of the money on random things from the wish list."""
+    keep = p.money * 3 // 10
+    for _ in range(12):
+        opts = [e for e in CPU_WISH if store_info(e)[1] <= p.money - keep]
+        if not opts:
+            break
+        store_buy(p, opts[random.randrange(len(opts))])
+
+
+def open_shop():
+    for p in G.players:
+        if p.is_cpu():
+            cpu_shop(p)
+    G.shop_queue = [p for p in G.players if not p.is_cpu()]
+    if not G.shop_queue:
+        next_round()
+        return
+    G.state = ST_SHOP
+    G.sel = 0
+    G.shop_top = 0
+    G.shop_msg = 0
+    G.timer = 0
+    sound.blip(660, 3)
+
+
+def update_shop(fb):
+    p = G.shop_queue[0]
+    n = len(STORE)
+    G.timer += 1
+    if engine_io.UP.is_just_pressed:
+        G.sel = (G.sel - 1) % n
+        sound.blip(520, 2)
+    if engine_io.DOWN.is_just_pressed:
+        G.sel = (G.sel + 1) % n
+        sound.blip(520, 2)
+    if G.sel < G.shop_top:
+        G.shop_top = G.sel
+    elif G.sel >= G.shop_top + SHOP_ROWS:
+        G.shop_top = G.sel - SHOP_ROWS + 1
+    if G.timer > 10:
+        if engine_io.A.is_just_pressed:
+            if store_buy(p, STORE[G.sel]):
+                sound.blip(1100, 3)
+                G.shop_msg = 0
+            else:
+                sound.blip(150, 6)
+                G.shop_msg = 50
+        elif engine_io.B.is_just_pressed:
+            G.shop_queue.pop(0)
+            sound.blip(990, 4)
+            if not G.shop_queue:
+                next_round()
+                return
+            G.sel = 0
+            G.shop_top = 0
+            G.shop_msg = 0
+            G.timer = 0
+            p = G.shop_queue[0]
+    if G.shop_msg > 0:
+        G.shop_msg -= 1
+
+    # Draw
+    fb.fill(C_SETUP_BG)
+    fb.fill_rect(0, 0, SW, 12, C_HUD)
+    fb.fill_rect(2, 2, 7, 7, p.color)
+    fb.text(p.name, 12, 2, C_WHITE)
+    ms = "$" + str(p.money)
+    fb.text(ms, SW - len(ms) * 8 - 1, 2, C_GOLD)
+    tiny("ITEM", 4, 15, C_GREY)
+    tiny("GET", 60, 15, C_GREY)
+    tiny("COST", 89, 15, C_GREY)
+    tiny("HAVE", 109, 15, C_GREY)
+    for k in range(SHOP_ROWS):
+        i = G.shop_top + k
+        if i >= n:
+            break
+        e = STORE[i]
+        name, price, bundle, desc = store_info(e)
+        y = 25 + k * 9
+        if i == G.sel:
+            fb.fill_rect(0, y - 2, SW, 9, C_SEL)
+        ok = p.money >= price
+        tiny(name, 4, y, C_WHITE if ok else C_GREY)
+        tiny("x" + str(bundle), 60, y, C_GREY)
+        ps = "$" + str(price)
+        tiny(ps, 105 - len(ps) * 4, y, C_GOLD if ok else C_RED)
+        hs = str(store_have(p, e))
+        tiny(hs, 125 - len(hs) * 4, y, C_WHITE)
+    # Scroll arrows
+    if G.shop_top > 0:
+        fb.pixel(122, 20, C_WHITE)
+        fb.hline(121, 21, 3, C_WHITE)
+    if G.shop_top + SHOP_ROWS < n:
+        fb.hline(121, 106, 3, C_WHITE)
+        fb.pixel(122, 107, C_WHITE)
+    if G.shop_msg > 0:
+        tiny_center("NOT ENOUGH MONEY!", 110, C_RED)
+    else:
+        tiny_center(store_info(STORE[G.sel])[3], 110, C_WHITE)
+    tiny_center("A: BUY   B: DONE", 119, C_GREY)
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 def tick():
@@ -1649,6 +1792,9 @@ def tick():
         return
     if st == ST_SETUP:
         update_setup(fb)
+        return
+    if st == ST_SHOP:
+        update_shop(fb)
         return
 
     if G.paused:
@@ -1681,7 +1827,7 @@ def tick():
                 G.state = ST_GAME_END
                 G.timer = 0
             else:
-                next_round()
+                open_shop()
         return
     if st == ST_GAME_END:
         G.timer += 1
