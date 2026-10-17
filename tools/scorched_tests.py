@@ -1,7 +1,7 @@
 """Drive Scorched Thumb headlessly on desktop Python: a scripted human game that saves
 screenshots to tools/out, then CPU-only soak games that catch crashes and stuck states.
 
-Usage: python scorched_tests.py [all|scripted|soak] [soak_games] [frames_per_game]
+Usage: python scorched_tests.py [all|edge|scripted|soak] [soak_games] [frames_per_game]
 """
 import os
 import sys
@@ -195,6 +195,55 @@ def soak(seed, frames):
     return ok
 
 
+def edge_shot():
+    """A tank at the very edge firing outward with no power and no wind used to hang mid-flight."""
+    st = {"since": 0, "last": None, "fired": False, "fly_frames": 0, "left_fly": False}
+
+    def driver(frame, g):
+        G = g.get("G")
+        pressed = set()
+        if G is None:
+            return pressed, []
+        s = G.state
+        if s != st["last"]:
+            if st["last"] == 4 and st["fired"]:
+                st["left_fly"] = True
+            st["last"] = s
+            st["since"] = 0
+        st["since"] += 1
+        t = st["since"]
+        if s == 0 and t == 5:
+            pressed.add("A")
+        if s == 1 and t == 3:
+            pressed.add("UP")
+        if s == 1 and t == 6:
+            pressed.add("A")
+        if s == 9 and t == 15:
+            pressed.add("B")
+        if s == 3 and not st["fired"] and t == 5 and not G.players[G.turn].is_cpu():
+            p = G.players[G.turn]
+            p.x = 4
+            p.y = g["ground_below"](4, 0)
+            p.angle = 180
+            p.power = 0
+            G.wind = 0
+            pressed.add("A")
+            st["fired"] = True
+        if s == 4 and st["fired"]:
+            st["fly_frames"] += 1
+        return pressed, []
+
+    thumbysim.SAVE.clear()
+    thumbysim.SAVE.update({"n": 2, "ty1": 2})
+    thumbysim.run_game(GAME, driver, 1500, os.path.join(OUT, "edge"))
+    ok = st["fired"] and st["left_fly"]
+    print("edge shot: fired=%s left_flight=%s frames_in_flight=%d ok=%s" %
+          (st["fired"], st["left_fly"], st["fly_frames"], ok))
+    return ok
+
+
+if which in ("all", "edge"):
+    edge_shot()
 if which in ("all", "scripted"):
     scripted()
 if which in ("all", "soak"):

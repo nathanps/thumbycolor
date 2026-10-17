@@ -163,6 +163,9 @@ heights = bytearray(W)              # Surface height per column, used while gene
 palette = bytearray(5 * 128 * 2)    # RGB565 colour for each terrain value on each row
 rng = bytearray(4)                  # Random state for the viper functions
 sim_ax = array.array("i", [0])      # Wind for sim_shot, in 16.16 fixed point
+MAX_TRAIL = const(700)
+trail_x = array.array("H", [0] * MAX_TRAIL)   # Shot path points, x + 8
+trail_y = array.array("H", [0] * MAX_TRAIL)   # and y + 512, so they stay positive
 
 _seed = random.getrandbits(30)
 for _i in range(4):
@@ -331,6 +334,21 @@ def ground_below(x: int, y: int) -> int:
 
 
 @micropython.viper
+def draw_trail(n: int, cam: int, oy: int, color: int):
+    """Plot the first n points of the shot trail."""
+    buf = ptr16(engine_draw.back_fb_data())
+    tx = ptr16(trail_x)
+    ty = ptr16(trail_y)
+    i = 0
+    while i < n:
+        x = tx[i] - 8 - cam
+        y = ty[i] - 512 - oy
+        if x >= 0 and x < 128 and y >= 0 and y < 128:
+            buf[y * 128 + x] = color
+        i += 1
+
+
+@micropython.viper
 def dim_screen():
     """Halve the brightness of the whole screen, for overlays."""
     buf = ptr16(engine_draw.back_fb_data())
@@ -480,19 +498,18 @@ def new_landscape(players):
 # Sound
 # ---------------------------------------------------------------------------
 class Sound:
+    # Setting a tone's frequency fades it out and back in (about 9ms), and a tone's
+    # clock only resets when it's created. So the whistle is retuned only now and
+    # then, and every blip or whistle gets a fresh tone.
     def __init__(self):
         self.boom = None
         self.whistle_tone = None
-        self.blip_tone = None
         self.whistling = False
+        self.whistle_hz = 0
+        self.whistle_wait = 0
         self.blip_frames = 0
         try:
             self.boom = WaveSoundResource("boom.wav")
-        except Exception:
-            pass
-        try:
-            self.whistle_tone = ToneSoundResource()
-            self.blip_tone = ToneSoundResource()
         except Exception:
             pass
 
@@ -503,37 +520,46 @@ class Sound:
             except Exception:
                 pass
 
+    def tone(self, freq, channel, gain):
+        try:
+            engine_audio.stop(channel)
+            t = ToneSoundResource()
+            t.frequency = freq
+            ch = engine_audio.play(t, channel, True)
+            ch.gain = gain
+            return t
+        except Exception:
+            return None
+
     def whistle(self, freq):
         """Falling-shell whistle that follows the shot."""
-        if self.whistle_tone is None:
+        if not self.whistling:
+            self.whistle_tone = self.tone(freq, 1, 0.12)
+            self.whistling = True
+            self.whistle_hz = freq
+            self.whistle_wait = 5
             return
-        try:
-            self.whistle_tone.frequency = freq
-            if not self.whistling:
-                ch = engine_audio.play(self.whistle_tone, 1, True)
-                ch.gain = 0.12
-                self.whistling = True
-        except Exception:
-            pass
+        self.whistle_wait -= 1
+        if self.whistle_wait <= 0 and abs(freq - self.whistle_hz) >= 40 and self.whistle_tone:
+            try:
+                self.whistle_tone.frequency = freq
+            except Exception:
+                pass
+            self.whistle_hz = freq
+            self.whistle_wait = 5
 
     def whistle_stop(self):
         if self.whistling:
             self.whistling = False
+            self.whistle_tone = None
             try:
                 engine_audio.stop(1)
             except Exception:
                 pass
 
     def blip(self, freq, frames=3):
-        if self.blip_tone is None:
-            return
-        try:
-            self.blip_tone.frequency = freq
-            ch = engine_audio.play(self.blip_tone, 2, True)
-            ch.gain = 0.2
-            self.blip_frames = frames
-        except Exception:
-            pass
+        self.tone(freq, 2, 0.2)
+        self.blip_frames = frames
 
     def tick(self):
         if self.blip_frames > 0:
@@ -683,7 +709,7 @@ class Game:
         self.dying = []             # Tanks waiting to blow up
         self.popups = []            # Floating damage numbers: [x, y, text, frames]
         self.debris = []            # Flying bits from explosions: [x, y, vx, vy, frames, color]
-        self.trail = []             # Packed points of this turn's shot paths
+        self.trail_n = 0            # Points in trail_x/trail_y from this turn's shots
         self.trail_color = C_WHITE
         self.dx0 = W                # Columns where dirt may need to fall
         self.dx1 = -1
@@ -726,6 +752,7 @@ def load_settings():
         pass
     settings["n"] = min(4, max(2, settings["n"]))
     settings["r"] = min(len(ROUND_OPTS) - 1, max(0, settings["r"]))
+    settings["aim"] = 1 if settings["aim"] else 0
     for i in range(4):
         settings["names"][i] %= len(NAMES)
         settings["types"][i] %= len(TYPE_LABELS)
@@ -913,8 +940,11 @@ def roll_shot(s):
 
 
 def add_trail(x, y):
-    if len(G.trail) < 700 and -8 <= x < W + 8 and y > -500:
-        G.trail.append((int(x) + 8) | ((int(y) + 512) << 9))
+    n = G.trail_n
+    if n < MAX_TRAIL and -8 <= x < W + 8 and y > -500:
+        trail_x[n] = int(x) + 8
+        trail_y[n] = int(y) + 512
+        G.trail_n = n + 1
 
 
 def step_shot(s):
@@ -931,7 +961,7 @@ def step_shot(s):
         if s.kind == K_MIRV and not s.split and s.vy > 0:
             return 3
         if s.x < 0 or s.x >= W:
-            if s.x < -6 or s.x >= W + 6:
+            if s.x < -6 or s.x >= W + 6 or s.y >= H:
                 return 2
             continue
         ix = int(s.x)
@@ -944,6 +974,8 @@ def step_shot(s):
         if hit_tank(ix, iy, s) is not None:
             return 1
     s.age += 1
+    if s.age > 3000:
+        return 2                    # Safety net: nothing flies for 50 seconds
     return 0
 
 
@@ -986,7 +1018,7 @@ def fire(p):
     speed = p.power * V_MAX / 1000
     tx, ty = p.barrel_tip(p.angle, 7)
     G.shots = [Shot(tx, ty, math.cos(a) * speed, -math.sin(a) * speed, p, w)]
-    G.trail = []
+    G.trail_n = 0
     G.trail_color = p.color
     if p.inv[p.wsel] == 0:
         p.next_weapon()
@@ -1117,7 +1149,7 @@ def next_round():
     G.dying = []
     G.popups = []
     G.debris = []
-    G.trail = []
+    G.trail_n = 0
     G.dx0 = W
     G.dx1 = -1
     G.turn_count = 0
@@ -1459,10 +1491,7 @@ def draw_scene(fb):
         G.shake -= 1
     render_world(cam, oy)
 
-    # Shot trails
-    tc = G.trail_color
-    for v in G.trail:
-        fb.pixel((v & 0x1FF) - 8 - cam, (v >> 9) - 512 - oy, tc)
+    draw_trail(G.trail_n, cam, oy, G.trail_color)
 
     cur = G.players[G.turn] if G.players else None
     aiming = G.state in (ST_TURN, ST_AIM)

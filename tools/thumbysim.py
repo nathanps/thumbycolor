@@ -22,7 +22,7 @@ _mp.const = lambda x: x
 builtins.micropython = _mp
 sys.modules["micropython"] = _mp
 builtins.ptr8 = lambda b: b
-builtins.ptr16 = lambda b: memoryview(b).cast("H")
+builtins.ptr16 = lambda b: memoryview(b).cast("B").cast("H")
 builtins.ptr32 = lambda b: memoryview(b).cast("B").cast("i")
 
 _back = bytearray(SCREEN * SCREEN * 2)
