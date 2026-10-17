@@ -36,22 +36,38 @@ V_MAX = 4.4             # Launch speed at full power
 WIND_K = 0.0008         # Sideways acceleration per point of wind
 MAX_WIND = const(15)
 
-# Weapons: (name, blast radius, damage, kind, price, bundle size)
+# Weapons: (name, blast radius, damage, kind, price, bundle size, shop description)
 K_MISSILE = const(0)
 K_MIRV = const(1)       # Splits into five warheads at the top of its arc
 K_DIRT = const(2)       # Adds a ball of dirt instead of blowing a hole
 K_ROLLER = const(3)     # Rolls downhill after landing until it stops or hits a tank
+K_FUNKY = const(4)      # Bursts into bomblets that scatter in all directions
+K_TRACER = const(5)     # No explosion, just shows the path
 
 WEAPONS = (
-    ("BABY MISSILE", 6, 35, K_MISSILE, 0, 0),
-    ("MISSILE", 9, 55, K_MISSILE, 1500, 5),
-    ("BIG BOMB", 15, 80, K_MISSILE, 4000, 2),
-    ("MIRV", 7, 40, K_MIRV, 6000, 2),
-    ("DIRT BOMB", 13, 0, K_DIRT, 2000, 3),
-    ("ROLLER", 9, 55, K_ROLLER, 3000, 3),
+    ("BABY MISSILE", 6, 35, K_MISSILE, 0, 0, "SMALL BUT NEVER RUNS OUT"),
+    ("MISSILE", 9, 55, K_MISSILE, 1500, 5, "A BIGGER BLAST"),
+    ("BIG BOMB", 15, 80, K_MISSILE, 4000, 2, "A HUGE BLAST"),
+    ("MIRV", 7, 40, K_MIRV, 6000, 2, "SPLITS INTO 5 AT THE TOP"),
+    ("FUNKY BOMB", 10, 45, K_FUNKY, 7000, 2, "BURSTS INTO MINI BOMBS"),
+    ("ROLLER", 9, 55, K_ROLLER, 3000, 3, "ROLLS DOWNHILL INTO TANKS"),
+    ("DIRT BOMB", 13, 0, K_DIRT, 2000, 3, "BURIES THINGS IN DIRT"),
+    ("TRACER", 0, 0, K_TRACER, 300, 10, "SHOWS THE PATH, NO DAMAGE"),
 )
-START_INV = (-1, 3, 1, 1, 2, 2)    # -1 means unlimited
-START_FUEL = const(40)
+START_INV = (-1, 3, 1, 1, 1, 2, 2, 5)    # -1 means unlimited
+FUNKY_BITS = const(6)
+
+# Items: (name, price, bundle size, shop description)
+IT_CHUTE = const(0)     # Opens automatically when a tank falls, so no fall damage
+IT_SHIELD = const(1)    # One is switched on at the start of each round
+IT_FUEL = const(2)      # Spent driving with LB/RB
+ITEMS = (
+    ("PARACHUTE", 1500, 3, "NO DAMAGE FROM FALLING"),
+    ("SHIELD", 3000, 2, "SOAKS UP 60 DAMAGE A ROUND"),
+    ("FUEL", 500, 25, "DRIVE AROUND WITH LB/RB"),
+)
+START_ITEMS = (1, 1, 40)
+SHIELD_HP = const(60)
 
 MONEY_PER_HP = const(30)
 KILL_BONUS = const(1500)
@@ -108,6 +124,8 @@ C_GOLD = rgb(255, 200, 40)
 C_ORANGE = rgb(255, 120, 30)
 C_SEL = rgb(40, 50, 110)
 C_SETUP_BG = rgb(10, 12, 30)
+C_SHIELD = rgb(120, 230, 255)
+C_RED = rgb(240, 70, 60)
 
 PLAYER_COLORS = (rgb(255, 70, 60), rgb(70, 160, 255),
                  rgb(255, 215, 40), rgb(220, 90, 255))
@@ -540,8 +558,10 @@ class Player:
         self.alive = True
         self.fall = 0
         self.flash = 0
-        self.fuel = START_FUEL
         self.inv = list(START_INV)
+        self.items = list(START_ITEMS)
+        self.shield = 0             # Shield strength left this round
+        self.chute = False          # Parachute open while falling
         self.wsel = 0
         self.ai_angle = 60
         self.ai_power = 500
@@ -562,8 +582,13 @@ class Player:
         self.alive = True
         self.fall = 0
         self.flash = 0
-        self.fuel = START_FUEL
+        self.chute = False
         self.inv = list(START_INV)
+        self.items = list(START_ITEMS)
+        self.shield = 0
+        if self.items[IT_SHIELD] > 0:
+            self.items[IT_SHIELD] -= 1
+            self.shield = SHIELD_HP
         self.wsel = 0
         self.ai_target = None
         self.ai_streak = 0
@@ -589,7 +614,10 @@ class Shot:
         self.vy = vy
         self.owner = owner
         self.weapon = weapon
-        self.kind = WEAPONS[weapon][3]
+        w = WEAPONS[weapon]
+        self.radius = w[1]
+        self.damage = w[2]
+        self.kind = w[3]
         self.age = 0
         self.split = False          # MIRV warheads that already split (or are children)
         self.rolling = False
@@ -717,9 +745,19 @@ def popup(x, y, text, color):
     G.popups.append([x, y, text, 50, color])
 
 
-def hurt(p, amount, owner):
+def hurt(p, amount, owner, blast=True):
     if amount <= 0 or not p.alive:
         return
+    if blast and p.shield > 0:
+        soak = min(amount, p.shield)
+        p.shield -= soak
+        amount -= soak
+        if p.shield == 0:
+            popup(p.x, p.y - 18, "SHIELD DOWN", C_SHIELD)
+        if amount <= 0:
+            popup(p.x, p.y - 12, "-" + str(soak), C_SHIELD)
+            p.flash = 12
+            return
     if amount > p.hp:
         amount = p.hp
     p.hp -= amount
@@ -767,9 +805,21 @@ def hit_tank(ix, iy, s):
     return None
 
 
-def detonate(s):
-    w = WEAPONS[s.weapon]
-    boom(int(s.x), int(s.y), w[1], w[2], s.owner, s.kind == K_DIRT)
+def detonate(s, out):
+    """Blow up a shot. Any bomblets it throws out are added to the out list."""
+    if s.kind == K_TRACER:
+        return
+    boom(int(s.x), int(s.y), s.radius, s.damage, s.owner, s.kind == K_DIRT)
+    if s.kind == K_FUNKY:
+        for _ in range(FUNKY_BITS):
+            c = Shot(s.x, s.y - 2, random.uniform(-1.6, 1.6), random.uniform(-2.6, -1.2),
+                     s.owner, s.weapon)
+            c.kind = K_MISSILE
+            c.radius = 6
+            c.damage = 30
+            c.age = 99
+            out.append(c)
+        sound.blip(1400, 3)
 
 
 def start_roll(s, ix, iy):
@@ -968,7 +1018,7 @@ def cpu_plan(p):
     # Maybe pick something bigger, as long as it won't hit ourselves
     dist = abs(t.x - p.x)
     options = [i for i in range(1, len(WEAPONS))
-               if p.inv[i] != 0 and WEAPONS[i][3] in (K_MISSILE, K_MIRV)
+               if p.inv[i] != 0 and WEAPONS[i][3] in (K_MISSILE, K_MIRV, K_FUNKY)
                and WEAPONS[i][1] + 8 < dist]
     if options and random.random() < special:
         p.wsel = options[random.randrange(len(options))]
@@ -1111,7 +1161,7 @@ def hold_steps(i, btn):
 
 def try_drive(p, d):
     nx = p.x + d
-    if nx < 4 or nx > W - 5 or p.fuel <= 0:
+    if nx < 4 or nx > W - 5 or p.items[IT_FUEL] <= 0:
         return
     for q in G.players:
         if q is not p and q.alive and abs(q.x - nx) < 8 and abs(q.y - p.y) < 8:
@@ -1125,7 +1175,7 @@ def try_drive(p, d):
         return                      # Too steep to climb, or a cliff
     p.x = nx
     p.y = top
-    p.fuel -= 1
+    p.items[IT_FUEL] -= 1
 
 
 def update_human_aim(p):
@@ -1228,7 +1278,7 @@ def update_fly():
     for s in G.shots:
         if s.rolling:
             if roll_shot(s):
-                detonate(s)
+                detonate(s, alive)
             else:
                 alive.append(s)
             continue
@@ -1236,7 +1286,7 @@ def update_fly():
         if r == 0:
             alive.append(s)
         elif r == 1:
-            detonate(s)
+            detonate(s, alive)
         elif r == 3:
             # MIRV: split into five warheads
             for k in (-2, -1, 0, 1, 2):
@@ -1265,13 +1315,20 @@ def update_settle():
         moved += m
     for p in G.players:
         if not supported(p):
+            moved += 1
+            if p.alive and not p.chute and p.fall >= FALL_SAFE and p.items[IT_CHUTE] > 0:
+                p.items[IT_CHUTE] -= 1
+                p.chute = True
+                sound.blip(500, 3)
+            if p.chute and G.frame & 1:
+                continue            # Parachutes fall at half speed
             p.y += 1
             p.fall += 1
-            moved += 1
         elif p.fall:
-            if p.fall > FALL_SAFE:
-                hurt(p, (p.fall - FALL_SAFE) * 2, None)
+            if p.fall > FALL_SAFE and not p.chute:
+                hurt(p, (p.fall - FALL_SAFE) * 2, None, False)
             p.fall = 0
+            p.chute = False
     if moved:
         G.quiet = 0
     else:
@@ -1307,6 +1364,14 @@ def draw_tank(fb, p, cam, oy, active):
     fb.pixel(x - 2, y - 1, C_WHEEL)
     fb.pixel(x, y - 1, C_WHEEL)
     fb.pixel(x + 2, y - 1, C_WHEEL)
+    if p.shield > 0 and p.alive:
+        sc = C_SHIELD if p.shield > 20 or (G.frame // 4) & 1 else C_GREY
+        fb.ellipse(x, y - 4, 6, 6, sc)
+    if p.chute:
+        fb.hline(x - 3, y - 16, 7, C_WHITE)
+        fb.hline(x - 4, y - 15, 9, C_WHITE)
+        fb.line(x - 4, y - 14, x - 2, y - 7, C_GREY)
+        fb.line(x + 4, y - 14, x + 2, y - 7, C_GREY)
     if p.alive:
         fb.hline(x - 3, y - 9, 7, C_HP_BG)
         w = (p.hp * 7 + 99) // 100
@@ -1364,8 +1429,13 @@ def draw_hud(fb, p, cam):
         return
     tiny(p.name, 1, 1, p.color)
     tiny("HP" + str(p.hp), 30, 1, C_HP if p.hp > 35 else C_HP_LOW)
-    if p.fuel > 0:
-        tiny("F" + str(p.fuel), 56, 1, C_GREY)
+    fuel = p.items[IT_FUEL]
+    if fuel > 0:
+        tiny("F" + str(fuel), 54, 1, C_GREY)
+    if p.shield > 0:
+        tiny("S" + str(p.shield), 70, 1, C_SHIELD)
+    if p.items[IT_CHUTE] > 0:
+        tiny("C" + str(p.items[IT_CHUTE]), 86, 1, C_WHITE)
     w = G.wind
     if w == 0:
         ws = "WIND 0"

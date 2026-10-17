@@ -77,7 +77,7 @@ def scripted():
                     p.power = p.ai_power
                     st["shots"] += 1
                     # Try each special weapon in turn
-                    p.wsel = [1, 3, 5, 4, 2, 0][st["shots"] % 6]
+                    p.wsel = [1, 3, 5, 4, 2, 6, 7, 0][st["shots"] % 8]
                     if p.inv[p.wsel] == 0:
                         p.wsel = 0
                 elif t == 42:
@@ -107,6 +107,10 @@ def scripted():
                 if st["state_t"] == 45:
                     pressed.add("A")
                     st["phase"] = "done"
+            if any(q.chute for q in G.players) and "chute" not in st["seen"]:
+                st["seen"].add("chute"); name = "11_parachute"
+            if len(G.shots) >= 4 and "multi" not in st["seen"] and st["state_t"] > 3:
+                st["seen"].add("multi"); name = "12_many_shots"
             if name:
                 snaps.append(name)
         return pressed, snaps
