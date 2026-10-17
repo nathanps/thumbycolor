@@ -43,6 +43,7 @@ K_DIRT = const(2)       # Adds a ball of dirt instead of blowing a hole
 K_ROLLER = const(3)     # Rolls downhill after landing until it stops or hits a tank
 K_FUNKY = const(4)      # Bursts into bomblets that scatter in all directions
 K_TRACER = const(5)     # No explosion, just shows the path
+K_NAPALM = const(6)     # Splashes burning fuel that runs downhill
 
 WEAPONS = (
     ("BABY MISSILE", 6, 35, K_MISSILE, 0, 0, "SMALL BUT NEVER RUNS OUT"),
@@ -53,9 +54,12 @@ WEAPONS = (
     ("ROLLER", 9, 55, K_ROLLER, 3000, 3, "ROLLS DOWNHILL INTO TANKS"),
     ("DIRT BOMB", 13, 0, K_DIRT, 2000, 3, "BURIES THINGS IN DIRT"),
     ("TRACER", 0, 0, K_TRACER, 300, 10, "SHOWS THE PATH, NO DAMAGE"),
+    ("NAPALM", 4, 10, K_NAPALM, 5000, 2, "FIRE THAT FLOWS DOWNHILL"),
 )
-START_INV = (-1, 0, 0, 0, 0, 0, 0, 5)    # -1 means unlimited
+START_INV = (-1, 0, 0, 0, 0, 0, 0, 5, 0)    # -1 means unlimited
 FUNKY_BITS = const(6)
+NAPALM_DROPS = const(36)   # Burning drops one napalm splashes out
+FIRE_TICK = const(15)      # Frames between fire damage checks
 
 # Items: (name, price, bundle size, shop description)
 IT_CHUTE = const(0)     # Opens automatically when a tank falls, so no fall damage
@@ -79,7 +83,7 @@ ROUND_PAY = const(1000)    # For everyone, so the losers can buy something too
 # What the shop sells: (0, weapon index) or (1, item index)
 STORE = tuple([(0, i) for i in range(1, len(WEAPONS))] + [(1, i) for i in range(len(ITEMS))])
 # What the CPU likes to buy (repeats make it more likely)
-CPU_WISH = ((0, 1), (0, 1), (0, 2), (0, 3), (0, 4), (1, IT_SHIELD), (1, IT_CHUTE))
+CPU_WISH = ((0, 1), (0, 1), (0, 2), (0, 3), (0, 4), (0, 8), (1, IT_SHIELD), (1, IT_CHUTE))
 SHOP_ROWS = const(9)       # Rows that fit on the shop screen
 
 FALL_SAFE = const(3)    # Pixels a tank can drop without getting hurt
@@ -709,6 +713,9 @@ class Game:
         self.dying = []             # Tanks waiting to blow up
         self.popups = []            # Floating damage numbers: [x, y, text, frames]
         self.debris = []            # Flying bits from explosions: [x, y, vx, vy, frames, color]
+        self.fire = []              # Burning napalm drops: [x, y, frames left]
+        self.fire_owner = None
+        self.fire_t = 0
         self.trail_n = 0            # Points in trail_x/trail_y from this turn's shots
         self.trail_color = C_WHITE
         self.dx0 = W                # Columns where dirt may need to fall
@@ -784,7 +791,17 @@ def supported(p):
 
 
 def popup(x, y, text, color):
-    G.popups.append([x, y, text, 50, color])
+    G.popups.append([x, y, text, 50, color, None, 0])
+
+
+def damage_popup(p, amount, color):
+    """Show "-N" over a tank, adding to its last number if that's still fresh."""
+    for pu in G.popups:
+        if pu[5] is p and pu[4] == color and pu[3] > 25:
+            pu[6] += amount
+            pu[2] = "-" + str(pu[6])
+            return
+    G.popups.append([p.x, p.y - 12, "-" + str(amount), 50, color, p, amount])
 
 
 def hurt(p, amount, owner, blast=True):
@@ -797,7 +814,7 @@ def hurt(p, amount, owner, blast=True):
         if p.shield == 0:
             popup(p.x, p.y - 18, "SHIELD DOWN", C_SHIELD)
         if amount <= 0:
-            popup(p.x, p.y - 12, "-" + str(soak), C_SHIELD)
+            damage_popup(p, soak, C_SHIELD)
             p.flash = 12
             return
     if amount > p.hp:
@@ -807,7 +824,7 @@ def hurt(p, amount, owner, blast=True):
     G.calm = 0
     if p.power > p.max_power():
         p.power = p.max_power()
-    popup(p.x, p.y - 12, "-" + str(amount), C_WHITE)
+    damage_popup(p, amount, C_WHITE)
     if owner is not None and owner is not p:
         owner.money += amount * MONEY_PER_HP
     if p.hp <= 0:
@@ -876,9 +893,82 @@ def hit_tank(ix, iy, s):
     return None
 
 
+def fire_free(x, y, occ):
+    """Can a burning drop move into this pixel?"""
+    if x < 0 or x >= W or y >= BEDROCK:
+        return False
+    if y >= 0 and terrain[y * W + x]:
+        return False
+    return (x | (y << 9)) not in occ
+
+
+def splash_napalm(x, y, owner):
+    G.fire_owner = owner
+    G.fire_t = 0
+    for _ in range(NAPALM_DROPS):
+        G.fire.append([x + random.randint(-4, 4), y - random.randint(0, 4),
+                       random.randint(150, 240)])
+    sound.blip(220, 8)
+
+
+def update_fire():
+    """Burning drops flow like a liquid: down, then diagonally, then sideways."""
+    occ = set()
+    for d in G.fire:
+        occ.add(d[0] | (d[1] << 9))
+    keep = []
+    for d in G.fire:
+        x = d[0]
+        y = d[1]
+        occ.discard(x | (y << 9))
+        d[2] -= 1
+        if d[2] <= 0 or x < 0 or x >= W or y >= BEDROCK:
+            # Burnt out: leave a scorch mark on the ground below
+            if 0 <= x < W and 0 <= y + 1 < BEDROCK and terrain[(y + 1) * W + x]:
+                terrain[(y + 1) * W + x] = T_SCORCH
+            continue
+        if fire_free(x, y + 1, occ):
+            y += 1
+        else:
+            dx = 1 if random.getrandbits(1) else -1
+            if fire_free(x + dx, y + 1, occ):
+                x += dx
+                y += 1
+            elif fire_free(x - dx, y + 1, occ):
+                x -= dx
+                y += 1
+            elif random.getrandbits(1):
+                if fire_free(x + dx, y, occ):
+                    x += dx
+                elif fire_free(x - dx, y, occ):
+                    x -= dx
+        d[0] = x
+        d[1] = y
+        occ.add(x | (y << 9))
+        keep.append(d)
+    G.fire = keep
+
+    # Tanks sitting in the fire get burnt
+    G.fire_t += 1
+    if G.fire_t % FIRE_TICK == 0:
+        for p in G.players:
+            if not p.alive:
+                continue
+            n = 0
+            for d in G.fire:
+                if -4 <= d[0] - p.x <= 4 and p.y - 7 <= d[1] <= p.y:
+                    n += 1
+            if n:
+                hurt(p, min(6, 1 + n // 4), G.fire_owner)
+
+
 def detonate(s, out):
     """Blow up a shot. Any bomblets it throws out are added to the out list."""
     if s.kind == K_TRACER:
+        return
+    if s.kind == K_NAPALM:
+        boom(int(s.x), int(s.y), s.radius, s.damage, s.owner, False)
+        splash_napalm(int(s.x), int(s.y), s.owner)
         return
     boom(int(s.x), int(s.y), s.radius, s.damage, s.owner, s.kind == K_DIRT)
     if s.kind == K_FUNKY:
@@ -1094,7 +1184,7 @@ def cpu_plan(p):
     # Maybe pick something bigger, as long as it won't hit ourselves
     dist = abs(t.x - p.x)
     options = [i for i in range(1, len(WEAPONS))
-               if p.inv[i] != 0 and WEAPONS[i][3] in (K_MISSILE, K_MIRV, K_FUNKY)
+               if p.inv[i] != 0 and WEAPONS[i][3] in (K_MISSILE, K_MIRV, K_FUNKY, K_NAPALM)
                and WEAPONS[i][1] + 8 < dist]
     if options and random.random() < special:
         p.wsel = options[random.randrange(len(options))]
@@ -1149,6 +1239,7 @@ def next_round():
     G.dying = []
     G.popups = []
     G.debris = []
+    G.fire = []
     G.trail_n = 0
     G.dx0 = W
     G.dx1 = -1
@@ -1322,6 +1413,8 @@ def update_play():
     G.blasts = [b for b in G.blasts if b.t < b.dur]
     if G.debris:
         update_debris()
+    if G.fire:
+        update_fire()
 
     st = G.state
     if st == ST_TURN:
@@ -1343,6 +1436,8 @@ def update_play():
         if G.blasts:
             b = G.blasts[-1]
             cam_toward(b.x, 0.1)
+        elif G.fire:
+            cam_toward(G.fire[0][0], 0.1)
         elif G.dying:
             d = G.dying.pop(0)
             boom(d.x, d.y - 3, 11, 40, None, False)
@@ -1515,6 +1610,15 @@ def draw_scene(fb):
 
     for d in G.debris:
         fb.pixel(int(d[0]) - cam, int(d[1]) - oy, d[5])
+
+    if G.fire:
+        f = G.frame
+        for d in G.fire:
+            fx = d[0] - cam
+            fy = d[1] - oy
+            fb.pixel(fx, fy, FIRE_COLORS[1 + ((fx + f) & 1)])
+            if (fx * 7 + f) % 3 == 0:
+                fb.pixel(fx, fy - 1, FIRE_COLORS[2 + ((fy + f) & 1)])
 
     for b in G.blasts:
         b.draw(fb, cam, oy)

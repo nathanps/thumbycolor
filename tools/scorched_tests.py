@@ -77,7 +77,7 @@ def scripted():
                     p.power = p.ai_power
                     st["shots"] += 1
                     # Try each special weapon in turn
-                    p.wsel = [1, 3, 5, 4, 2, 6, 7, 0][st["shots"] % 8]
+                    p.wsel = [1, 3, 5, 4, 2, 6, 7, 8, 0][st["shots"] % 9]
                     if p.inv[p.wsel] == 0:
                         p.wsel = 0
                 elif t == 42:
