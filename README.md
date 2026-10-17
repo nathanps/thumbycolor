@@ -56,6 +56,16 @@ A multiplication times tables learning game for kids.
 - Tracks best scores for each table (saves between sessions)
 - Shows correct answer when wrong, helping reinforce learning
 
+### Scorched Thumb
+A Scorched Earth style artillery game for 2-4 players.
+- Turn-based tank battles on a 256px wide battlefield that scrolls (minimap in the HUD)
+- Destructible terrain: craters with scorched rims, loose dirt and tanks fall, fall damage
+- Weapons: Baby Missile, Missile, Big Bomb, MIRV, Dirt Bomb, Roller
+- Wind, six landscape themes, and three landscape styles
+- Hotseat play; any seat can be a CPU (Easy / Medium / Hard) that zeroes in on its target
+- Rounds with wins and money; sudden death breaks stalemates
+- Controls: Left/Right angle, Up/Down power, A fire, B tap weapon, hold B + Left/Right look around, LB/RB drive, MENU pause
+
 ## Installation
 
 1. Connect your Thumby Color via USB
@@ -67,3 +77,4 @@ A multiplication times tables learning game for kids.
 - Screen resolution: 128x128 pixels
 - Engine: [Tiny Game Engine](https://github.com/TinyCircuits/TinyCircuits-Tiny-Game-Engine) (MicroPython)
 - Documentation: https://color.thumby.us/doc/landing.html
+- Desktop testing: `tools/thumbysim.py` stands in for the engine so a game's `main.py` runs on regular Python and saves screenshots. See `tools/scorched_tests.py` for an example.
