@@ -51,7 +51,7 @@ def driver(frame, g):
     t = st["since"]
     if s == 0 and t % 10 == 5: pressed.add("A")
     if s == 1:
-        seq = {3: "RIGHT", 6: "DOWN", 8: "DOWN", 12: "LEFT", 14: "UP", 16: "UP", 18: "UP", 20: "A"}
+        seq = {3: "RIGHT", 6: "DOWN", 8: "DOWN", 10: "DOWN", 12: "LEFT", 14: "UP", 16: "UP", 18: "UP", 20: "UP", 22: "A"}
         if t in seq: pressed.add(seq[t])
     if s in (7, 8) and t % 40 == 35: pressed.add("A")
     return pressed, []

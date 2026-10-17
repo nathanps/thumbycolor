@@ -36,8 +36,8 @@ def scripted():
                 st["t"] = 0
         elif ph == "setup":
             # Make it a 3 player game: P1 human, P2 CPU medium, P3 human
-            seq = {3: "RIGHT", 6: "DOWN", 9: "DOWN", 12: "DOWN", 15: "DOWN",
-                   18: "LEFT", 21: "LEFT", 24: "A"}
+            seq = {3: "RIGHT", 6: "DOWN", 9: "DOWN", 12: "DOWN", 15: "DOWN", 17: "DOWN",
+                   19: "LEFT", 21: "LEFT", 24: "A"}
             if st["t"] in seq:
                 pressed.add(seq[st["t"]])
             if st["t"] == 27:
@@ -162,7 +162,7 @@ def soak(seed, frames):
             pressed.add("A")
         if s == 1:
             # Setup: four CPUs (hard, easy, medium, hard) then start
-            seq = {3: "RIGHT", 6: "DOWN", 8: "DOWN"}
+            seq = {3: "RIGHT", 6: "DOWN", 8: "DOWN", 10: "DOWN"}
             t = st["since"]
             if t in seq:
                 pressed.add(seq[t])
@@ -173,8 +173,10 @@ def soak(seed, frames):
             if t == 16:
                 pressed.add("UP")
             if t == 18:
-                pressed.add("UP")        # wraps to START
+                pressed.add("UP")
             if t == 20:
+                pressed.add("UP")        # wraps to START
+            if t == 22:
                 pressed.add("A")
         if s in (7, 8) and st["since"] % 40 == 35:
             pressed.add("A")

@@ -706,7 +706,7 @@ class Game:
 
 G = Game()
 
-settings = {"n": 2, "r": 1, "names": [0, 1, 2, 3], "types": [0, 2, 2, 2]}
+settings = {"n": 2, "r": 1, "aim": 1, "names": [0, 1, 2, 3], "types": [0, 2, 2, 2]}
 
 engine_save._init_saves_dir("Saves/Games/ScorchedThumb")
 engine_save.set_location("save")
@@ -716,6 +716,7 @@ def load_settings():
     try:
         settings["n"] = int(engine_save.load("n", 2))
         settings["r"] = int(engine_save.load("r", 1))
+        settings["aim"] = int(engine_save.load("aim", 1))
         for i in range(4):
             settings["names"][i] = int(engine_save.load("nm" + str(i), i))
             settings["types"][i] = int(engine_save.load("ty" + str(i), 0 if i == 0 else 2))
@@ -732,6 +733,7 @@ def save_settings():
     try:
         engine_save.save("n", settings["n"])
         engine_save.save("r", settings["r"])
+        engine_save.save("aim", settings["aim"])
         for i in range(4):
             engine_save.save("nm" + str(i), settings["names"][i])
             engine_save.save("ty" + str(i), settings["types"][i])
@@ -1395,6 +1397,25 @@ def draw_tank(fb, p, cam, oy, active):
         fb.pixel(x, y - 12, C_WHITE)
 
 
+def draw_aim_help(fb, p, cam, oy):
+    """Dotted start of the shot's path (gravity only, no wind) for younger players."""
+    a = math.radians(p.angle)
+    sp = p.power * V_MAX / 1000
+    x, y = p.barrel_tip(p.angle, 7)
+    vx = math.cos(a) * sp
+    vy = -math.sin(a) * sp
+    for f in range(1, 46):
+        vy += GRAVITY
+        x += vx
+        y += vy
+        ix = int(x)
+        iy = int(y)
+        if ix < 0 or ix >= W or iy >= BEDROCK or (iy >= 0 and terrain[iy * W + ix]):
+            break
+        if f % 3 == 0:
+            fb.pixel(ix - cam, iy - oy, C_WHITE if (f // 3) & 1 else C_BLACK)
+
+
 def draw_scene(fb):
     cam = int(G.cam + 0.5)
     oy = 0
@@ -1413,6 +1434,9 @@ def draw_scene(fb):
     aiming = G.state in (ST_TURN, ST_AIM)
     for p in G.players:
         draw_tank(fb, p, cam, oy, aiming and p is cur)
+
+    if G.state == ST_AIM and cur is not None and not cur.is_cpu() and settings["aim"]:
+        draw_aim_help(fb, cur, cam, oy)
 
     for s in G.shots:
         sx = int(s.x) - cam
@@ -1561,8 +1585,11 @@ def update_title(fb):
         sound.blip(660, 3)
 
 
+SETUP_P0 = const(3)      # Setup row of the first player
+
+
 def setup_rows():
-    return 3 + settings["n"]        # Players, rounds, each player, start
+    return SETUP_P0 + settings["n"] + 1     # Players, rounds, aim help, each player, start
 
 
 def cycle_name(i):
@@ -1600,8 +1627,10 @@ def update_setup(fb):
                     cycle_name(i)
         elif sel == 1:
             settings["r"] = (settings["r"] + d) % len(ROUND_OPTS)
+        elif sel == 2:
+            settings["aim"] = 1 - settings["aim"]
         elif sel < start_row:
-            i = sel - 2
+            i = sel - SETUP_P0
             settings["types"][i] = (settings["types"][i] + d) % len(TYPE_LABELS)
     if engine_io.A.is_just_pressed:
         if sel == start_row:
@@ -1609,8 +1638,8 @@ def update_setup(fb):
             sound.blip(990, 5)
             start_game()
             return
-        elif 2 <= sel < start_row:
-            cycle_name(sel - 2)
+        elif SETUP_P0 <= sel < start_row:
+            cycle_name(sel - SETUP_P0)
             sound.blip(740, 2)
     if engine_io.B.is_just_pressed:
         G.state = ST_TITLE
@@ -1623,7 +1652,7 @@ def update_setup(fb):
     text_center(fb, "BATTLE SETUP", 3, C_GOLD)
     rows = setup_rows()
     for r in range(rows):
-        y = 18 + r * 12
+        y = 17 + r * 11
         if r == G.sel:
             fb.fill_rect(0, y - 2, SW, 11, C_SEL)
         if r == 0:
@@ -1633,16 +1662,21 @@ def update_setup(fb):
             fb.text("ROUNDS", 4, y, C_WHITE)
             v = str(ROUND_OPTS[settings["r"]])
             fb.text("<" + v + ">", 92 if len(v) == 1 else 88, y, C_GOLD)
+        elif r == 2:
+            fb.text("AIM HELP", 4, y, C_WHITE)
+            fb.text("<ON>" if settings["aim"] else "<OFF>", 88 if settings["aim"] else 80, y, C_GOLD)
         elif r < rows - 1:
-            i = r - 2
+            i = r - SETUP_P0
             fb.fill_rect(3, y, 7, 7, PLAYER_COLORS[i])
             fb.text(NAMES[settings["names"][i]], 14, y, C_WHITE)
             t = TYPE_LABELS[settings["types"][i]]
             fb.text(t, SW - len(t) * 8 - 2, y, C_GREY if settings["types"][i] else C_WHITE)
         else:
             text_center(fb, "START!", y, C_ORANGE)
-    if 2 <= G.sel < rows - 1:
+    if SETUP_P0 <= G.sel < rows - 1:
         tiny_center("L/R: HUMAN OR CPU   A: NAME", 112, C_GREY)
+    elif G.sel == 2:
+        tiny_center("SHOWS WHERE SHOTS START TO GO", 112, C_GREY)
     else:
         tiny_center("UP/DOWN: PICK   L/R: CHANGE", 112, C_GREY)
     tiny_center("A: OK   B: BACK", 119, C_GREY)
