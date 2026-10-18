@@ -1254,7 +1254,8 @@ def draw_message(fb):
     if G.msg_t <= 0:
         return
     h = 26 if G.msg2 else 16
-    y = 52
+    # Keep out of the ball's way: top half of the screen if the ball is low, and the other way round
+    y = 22 if ball.y - G.cam + HUD_H > 64 else 84
     fb.fill_rect(4, y, SW - 8, h, C_PANEL)
     fb.rect(4, y, SW - 8, h, C_GOLD)
     text_center(fb, G.msg, y + 4, C_GOLD)
@@ -1300,6 +1301,7 @@ def update_title(fb):
     lflip.up = rflip.up = False
     physics_flippers_only()
     draw_table(fb)
+    dim_screen()
     dim_screen()
     big_center(fb, "SPACE", 14, rgb(120, 200, 255), C_BLACK, 4)
     big_center(fb, "PINBALL", 40, C_GOLD, C_BLACK, 3)
