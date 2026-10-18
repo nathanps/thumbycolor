@@ -32,6 +32,7 @@ CONTACT = 3.5           # Ball centre to wall pixel centre distance when touchin
 GRAVITY = 0.075         # Pixels per frame per frame, down the table
 V_MAX = 9.0             # Speed limit, so the ball never moves too far in one sub-step
 E_WALL = 0.45           # Bounciness of walls
+E_RAIL = 0.1            # The curved top of the table hardly bounces, so orbit shots roll round it
 E_FLIP = 0.25           # Bounciness of flipper rubber (the kick comes from the swing)
 BUMP_V = 4.4            # Speed a pop bumper kicks the ball away at
 SLING_V = 3.2           # Speed a slingshot adds
@@ -72,6 +73,8 @@ K_SLING_R = const(3)
 K_BUMP = const(4)       # 4 to 11: pop bumpers
 K_TARGET = const(16)    # 16 to 47: drop targets
 K_DOOR = const(48)      # The castle gate
+K_RAIL = const(49)      # The curved top of the table
+K_GUIDE = const(50)     # Outlane guides: solid only to a ball coming down
 
 # Palette indices. 0-15 are each table's painted colours, 16-63 lamps and zones
 # (not solid), 64-79 each table's wall colours, and 80 up solid features.
@@ -87,7 +90,10 @@ P_SLING_R = const(68)
 P_SLING_BODY = const(69)
 P_APRON = const(70)
 P_GATE = const(71)
-P_S1 = const(72)        # 72 to 79: extra solid colours for a table's own walls
+P_S1 = const(72)        # 72 to 76: extra solid colours for a table's own walls
+P_ARC = const(78)       # The curved top of the table (same colours as the walls)
+P_ARC_HI = const(79)
+P_GUIDE = const(77)
 SOLID0 = const(80)      # First solid handed out by new_solid()
 
 # Zone types (zones are non-solid areas that do something when the ball enters)
@@ -625,7 +631,7 @@ def add_lanes(posts, lamp_y=29, letters=None):
                 table[(lamp_y + dy) * TW + cx + dx] = lamp
         T.lane_lamps.append(lamp)
     for x in posts:
-        tline(x, 13, x, 25, 1.2, P_POST)
+        tline(x + 0.5, 13, x + 0.5, 25, 1.0, P_POST)   # Centred on a pixel, so the tip is one pixel
 
 
 def add_mult(y, xs=(33, 47, 61, 75)):
@@ -776,20 +782,21 @@ def build_shell(outlanes):
     # Outer walls with rounded top corners. Everything outside is solid
     for y in range(TH):
         if y < 3:
-            trow(y, 0, TW, P_WALL)
+            trow(y, 0, TW, P_ARC)
             continue
         if y < ARC_Y:
             dy = ARC_Y - y - 0.5
             w = math.sqrt(ARC_R * ARC_R - dy * dy) if dy < ARC_R else 0
             xl = int(ARC_L - w + 0.5)
-            xr = int(ARC_RX + w + 0.5)
+            xr = int(ARC_RX + w + 0.999)     # Rounded up, so it meets the lane wall without a step
         else:
             xl = 3
             xr = 125
-        trow(y, 0, xl, P_WALL)
-        trow(y, xr, TW, P_WALL)
-        table[y * TW + xl - 1] = P_WALL_HI
-        table[y * TW + xr] = P_WALL_HI
+        top = y < ARC_Y
+        trow(y, 0, xl, P_ARC if top else P_WALL)
+        trow(y, xr, TW, P_ARC if top else P_WALL)
+        table[y * TW + xl - 1] = P_ARC_HI if top else P_WALL_HI
+        table[y * TW + xr] = P_ARC_HI if top else P_WALL_HI
 
     # Plunger lane: separator wall, gate, floor
     for y in range(72, TH):
@@ -821,8 +828,13 @@ def build_shell(outlanes):
         if outlanes:
             # Post between the outlane and the inlane
             px = 102 if side else 12
-            tline(px, 170, px, g0[1], 1.2, P_POST)
+            tline(px + 0.5, 170, px + 0.5, g0[1], 1.0, P_POST)
             tline(px, g0[1], px, TH, 1.0, P_WALL_HI)
+        if outlanes:
+            # Rubber guide above the outlane: a ball running down the side wall gets
+            # turned into the inlane instead of dropping straight down the outlane
+            gx0, gx1 = (111, 102) if side else (3, 12)
+            tline(gx0, 150, gx1, 160, 1.2, P_GUIDE)
         fx = RFLIP_X if side else LFLIP_X
         tdisc(fx, FLIP_Y, 2, P_WALL)            # Hidden under the flipper's pivot
 
@@ -913,8 +925,8 @@ def dino_build():
     add_bumper(71, 54, 6, (230, 70, 30), (255, 190, 60))
     add_bumper(57, 73, 6, (230, 70, 30), (255, 190, 60))
     add_hole(20, 104, (2.8, -2.2), H_COUNT, 3, "CHOMP!", rim=(60, 120, 50))
-    tline(46, 96, 46, 104, 1.2, P_POST)
-    tline(68, 96, 68, 104, 1.2, P_POST)
+    tline(46.5, 96, 46.5, 104, 1.0, P_POST)
+    tline(68.5, 96, 68.5, 104, 1.0, P_POST)
     add_spinner(48, 67, 100)
     add_bank((66, 78, 90), 112, EGG, (240, 230, 200), (110, 170, 90), (60, 60, 45),
              R_EXTRA, every=2, name="EGGS")
@@ -997,7 +1009,7 @@ def castle_build():
              R_KICK, respawn=480, points=1000, name="TROLLS")
     add_mult(124)
     # Left orbit with a spinner
-    tline(16, 58, 16, 140, 1.2, P_WALL_HI)
+    tline(16.5, 58, 16.5, 140, 1.0, P_WALL_HI)
     add_spinner(3, 15, 112)
     add_ramp(87, 102, 100, 132, ((94.5, 100), (94.5, 52), (90, 38), (78, 30), (57, 28), (30, 30),
                                  (16, 38), (9, 50), (9, 58)), (0.0, 1.6), "CATAPULT!", 2500)
@@ -1106,6 +1118,12 @@ def build_table(i):
         kinds[k] = K_WALL
     kinds[P_SLING_L] = K_SLING_L
     kinds[P_SLING_R] = K_SLING_R
+    kinds[P_ARC] = K_RAIL
+    kinds[P_GUIDE] = K_GUIDE
+    palette[P_GUIDE] = palette[P_POST]
+    kinds[P_ARC_HI] = K_RAIL
+    palette[P_ARC] = palette[P_WALL]
+    palette[P_ARC_HI] = palette[P_WALL_HI]
     T.rubber = rgbt(spec["rubber"])
     T.wall_hi = palette[P_WALL_HI]
     for y in range(TH):
@@ -1356,6 +1374,14 @@ def hit_walls(b):
     n = probe(int(b.x * 16), int(b.y * 16))
     if n == 0:
         return
+    if pr[3] == K_GUIDE and b.vy < 0:
+        # One way: a ball going up (a kickback shot) passes through the outlane
+        # guide, but must still hit the side wall the guide is joined to
+        kinds[P_GUIDE] = K_AIR
+        n = probe(int(b.x * 16), int(b.y * 16))
+        kinds[P_GUIDE] = K_GUIDE
+        if n == 0:
+            return
     sx = pr[0]
     sy = pr[1]
     ln = math.sqrt(sx * sx + sy * sy)
@@ -1393,8 +1419,9 @@ def hit_walls(b):
             sound.blip(880 + 160 * (kind - K_BUMP), 3)
             return
     if vn < 0:
-        b.vx -= (1 + E_WALL) * vn * nx
-        b.vy -= (1 + E_WALL) * vn * ny
+        e = E_RAIL if kind == K_RAIL else E_WALL
+        b.vx -= (1 + e) * vn * nx
+        b.vy -= (1 + e) * vn * ny
         if kind == K_SLING_L or kind == K_SLING_R:
             i = kind - K_SLING_L
             if vn < -0.4 and G.sling_cd[i] == 0:
@@ -1873,6 +1900,7 @@ def hole_tick(b):
 def ball_gone(b):
     """A ball dropped off the bottom of the table."""
     balls.remove(b)
+    count("out_left" if b.x < 12 else ("out_right" if b.x > 102 else "drain_middle"))
     if G.save_t > 0:
         if G.multi or len(balls):
             auto_launch()

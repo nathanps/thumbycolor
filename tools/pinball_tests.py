@@ -92,7 +92,8 @@ def deep_overlap(g, b):
             x = int(b.x) + dx
             y = int(b.y) + dy
             if 0 <= x < 128 and 0 <= y < g["TH"]:
-                if kinds[table[y * 128 + x]]:
+                k = kinds[table[y * 128 + x]]
+                if k and k != g["K_GUIDE"]:      # A ball may pass up through a one-way guide
                     px = x + 0.5 - b.x
                     py = y + 0.5 - b.y
                     if px * px + py * py < 1.8 * 1.8:
