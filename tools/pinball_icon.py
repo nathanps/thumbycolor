@@ -1,4 +1,4 @@
-"""Usage: python pinball_icon.py ../Pinball/icon.bmp
+"""Usage: python pinball_icon.py ../1Pinball/icon.bmp
 
 Draw the 38x38 Space Pinball menu icon as a 16-bit X1R5G5B5 BMP (same layout as scorched_icon.py)."""
 import math, os, struct, sys

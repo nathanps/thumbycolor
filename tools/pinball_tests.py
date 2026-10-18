@@ -14,7 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import thumbysim  # noqa: E402
 
-GAME = os.path.join(HERE, "..", "Pinball", "main.py")
+GAME = os.path.join(HERE, "..", "1Pinball", "main.py")
 OUT = os.path.join(HERE, "out", "pinball")
 which = sys.argv[1] if len(sys.argv) > 1 else "all"
 
