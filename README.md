@@ -71,13 +71,17 @@ A Scorched Earth style artillery game for 2-4 players.
 - Hall of Fame: games and rounds won by each player's name, saved on the device
 - Controls: Left/Right angle, Up/Down power, A fire, B tap weapon, hold B + Left/Right look around, LB/RB drive, MENU pause
 
-### Space Pinball
-A space-themed pinball table that scrolls with the ball.
-- Two-screen tall table: planet pop bumpers, slingshots, rollover lanes and alien drop targets
-- Light all three lanes to raise the score multiplier (up to 5X); the flippers slide the lit lanes
-- Knock down all four aliens for a big bonus, and every third time for an extra ball
-- 3 balls, with a ball save right after each launch
-- High score saved between sessions
+### Pinball
+Five pinball tables that scroll with the ball. Pick one on the title screen with Left/Right; each keeps its own high score.
+- **Space** (easy): planet bumpers, rollover lanes and alien drop targets
+- **Dino Park** (easy): volcano bumpers, a spinner, dino eggs, and a T-rex that eats the ball (three bites = 2-ball multiball)
+- **Pirate Ship** (medium): a ramp up the mast, skull targets, a treasure chest hole (2-ball multiball) and a cannon kickback
+- **Castle** (hard): smash the castle gate and shoot the ball inside for 3-ball multiball, plus a catapult ramp, an orbit spinner and pop-up trolls
+- **Robot Factory** (hard): two ramps with spinners (combos!), gear bumpers, and bolt targets that light the lock for 3-ball multiball
+- The harder tables have outlanes that can drain the ball, with a kickback to save it
+- Light all the top lanes to raise the score multiplier (up to 5X); the flippers slide the lit lanes
+- 3 balls, ball save after each launch, double scoring during multiball
+- The camera stays on the flippers and only rises when the ball is high on the table
 - Controls: LB or LEFT left flipper, RB or A right flipper, hold DOWN to launch, UP to nudge, MENU pause
 
 ## Installation
