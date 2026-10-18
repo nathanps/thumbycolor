@@ -4,10 +4,12 @@ and balls escaping the table.
 
 Usage: python pinball_tests.py [all|scripted|soak] [soak_games] [frames_per_game]
 """
+import io
 import math
 import os
 import random
 import sys
+import tokenize
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -17,6 +19,25 @@ import thumbysim  # noqa: E402
 GAME = os.path.join(HERE, "..", "1Pinball", "main.py")
 OUT = os.path.join(HERE, "out", "pinball")
 which = sys.argv[1] if len(sys.argv) > 1 else "all"
+
+
+def small_ints():
+    """The device has no big integers: a literal of 2**30 or more is a syntax error there,
+    even outside viper. Desktop Python and mpy-cross accept them, so check here."""
+    ok = True
+    with open(GAME) as f:
+        src = f.read()
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type == tokenize.NUMBER:
+            try:
+                v = int(tok.string, 0)
+            except ValueError:
+                continue        # A float
+            if v >= 1 << 30:
+                print("line %d: %s is too big for the device (2**30 or more)" % (tok.start[0], tok.string))
+                ok = False
+    print("small ints:", "OK" if ok else "FAILED")
+    return ok
 
 
 def auto_flip(g, pressed, st):
@@ -241,7 +262,7 @@ def soak(seed, frames):
 
 
 if __name__ == "__main__":
-    ok = True
+    ok = small_ints()
     if which in ("all", "scripted"):
         ok = scripted() and ok
     if which in ("all", "soak"):

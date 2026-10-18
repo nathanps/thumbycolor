@@ -413,15 +413,16 @@ MULT_Y = 98
 def build_table():
     for i in range(len(table)):
         table[i] = P_BG
-    # Stars, from a fixed seed so the sky is always the same
-    s = 12345
+    # Stars, from a fixed seed so the sky is always the same. The device has no
+    # big integers (nothing 2**30 or over), so this generator keeps its numbers small
+    s = 1234
     for i in range(170):
-        s = (s * 1103515245 + 12345) & 0x7FFFFFFF
-        x = (s >> 8) % TW
-        s = (s * 1103515245 + 12345) & 0x7FFFFFFF
-        y = (s >> 8) % TH
-        s = (s * 1103515245 + 12345) & 0x7FFFFFFF
-        table[y * TW + x] = P_STAR + (s >> 8) % 3
+        s = (s * 75 + 74) % 65537
+        x = s % TW
+        s = (s * 75 + 74) % 65537
+        y = s % TH
+        s = (s * 75 + 74) % 65537
+        table[y * TW + x] = P_STAR + s % 3
 
     # A ringed planet painted in the middle of the playfield
     px, py, prad = MID_X, 160, 12
