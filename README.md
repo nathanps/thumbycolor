@@ -71,6 +71,15 @@ A Scorched Earth style artillery game for 2-4 players.
 - Hall of Fame: games and rounds won by each player's name, saved on the device
 - Controls: Left/Right angle, Up/Down power, A fire, B tap weapon, hold B + Left/Right look around, LB/RB drive, MENU pause
 
+### Space Pinball
+A space-themed pinball table that scrolls with the ball.
+- Two-screen tall table: planet pop bumpers, slingshots, rollover lanes and alien drop targets
+- Light all three lanes to raise the score multiplier (up to 5X); the flippers slide the lit lanes
+- Knock down all four aliens for a big bonus, and every third time for an extra ball
+- 3 balls, with a ball save right after each launch
+- High score saved between sessions
+- Controls: LB or LEFT left flipper, RB or A right flipper, hold DOWN to launch, UP to nudge, MENU pause
+
 ## Installation
 
 1. Connect your Thumby Color via USB
