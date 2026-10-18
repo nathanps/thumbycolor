@@ -5,7 +5,7 @@ Usage: python scorched_accuracy.py [frames]
 import os, sys, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import thumbysim
-GAME = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ScorchedThumb", "main.py")
+GAME = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "1ScorchedThumb", "main.py")
 stats = {}
 frame_ref = [0]
 st = {"patched": False, "since": 0, "last": None}

@@ -1,4 +1,4 @@
-"""Usage: python scorched_icon.py ../ScorchedThumb/icon.bmp
+"""Usage: python scorched_icon.py ../1ScorchedThumb/icon.bmp
 
 Draw the 38x38 Scorched Thumb menu icon as a 16-bit X1R5G5B5 BMP (same header layout as Labubu's)."""
 import math, os, struct, sys

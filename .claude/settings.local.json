@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "WebSearch",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "WebFetch(domain:color.thumby.us)"
     ]
   }
 }

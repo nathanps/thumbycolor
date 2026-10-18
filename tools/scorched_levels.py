@@ -13,7 +13,7 @@ sys.path.insert(0, TOOLS)
 import thumbysim  # noqa: E402
 from scorched_tests import practice_aim  # noqa: E402
 
-GAME = os.path.join(TOOLS, "..", "ScorchedThumb", "main.py")
+GAME = os.path.join(TOOLS, "..", "1ScorchedThumb", "main.py")
 OUT = os.path.join(TOOLS, "out", "levels")
 os.makedirs(OUT, exist_ok=True)
 results = []
